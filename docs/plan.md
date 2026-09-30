@@ -64,7 +64,7 @@ Each line is one GitHub issue: the title, then the acceptance criteria after the
 
 ### M1 — Real traffic, end to end
 
-1. [ ] Bootstrap repo, kind cluster, Makefile — `make up` works from a clean checkout; `make down` leaves nothing behind
+1. [x] Bootstrap repo, kind cluster, Makefile — `make up` works from a clean checkout; `make down` leaves nothing behind
 2. [ ] Install Kafka (Strimzi), Loki and Grafana via Helm — all healthy after `make up`, storage persisted
 3. [ ] Wikimedia feeder in Go — reads the recentchange stream, produces to Kafka, reconnects on drop, stamps every event with a unique ID and a produce timestamp, exports a produced-count metric
 4. [ ] Vector aggregator: Kafka to Loki — events parsed as JSON and queryable in Grafana; each event stamped with a pre-sink timestamp for latency measurement
