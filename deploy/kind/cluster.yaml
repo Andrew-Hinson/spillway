@@ -1,0 +1,10 @@
+# Local Spillway cluster: one control plane and two workers, so the
+# Vector agent DaemonSet and aggregator StatefulSet land on real, separate nodes.
+# The node image is set by the Makefile (KIND_NODE_IMAGE) and pinned by digest.
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+name: spillway
+nodes:
+  - role: control-plane
+  - role: worker
+  - role: worker

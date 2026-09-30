@@ -1,0 +1,4 @@
+# Tools installed by the Makefile
+/bin/
+# Kubeconfig for the local kind cluster
+/.kubeconfig
