@@ -1,0 +1,8 @@
+# Strimzi cluster operator. Watches only its own namespace (kafka), where the
+# Kafka cluster in deploy/platform/kafka lives.
+resources:
+  requests:
+    cpu: 100m
+    memory: 256Mi
+  limits:
+    memory: 384Mi

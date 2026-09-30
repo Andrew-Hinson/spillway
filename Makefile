@@ -1,8 +1,10 @@
 # Spillway local environment.
 #
-#   make up     create the kind cluster (installs pinned kind + kubectl into ./bin)
-#   make down   delete the cluster and its kubeconfig
-#   make clean  make down, then remove ./bin
+#   make up          create the kind cluster and install Kafka, Loki and Grafana
+#                    (installs pinned kind, kubectl and helm into ./bin)
+#   make down        delete the cluster and its kubeconfig
+#   make clean       make down, then remove ./bin
+#   make grafana-ui  port-forward Grafana to localhost:3000
 #
 # Only Docker, curl and make are needed on the host. The cluster's kubeconfig is
 # written to ./.kubeconfig so your ~/.kube/config is never touched:
@@ -18,24 +20,38 @@ KUBECONFIG_PATH := $(CURDIR)/.kubeconfig
 
 KIND_VERSION    := v0.33.0
 KUBECTL_VERSION := v1.37.1
+HELM_VERSION    := v4.3.0
+
+# Platform charts.
+STRIMZI_CHART_VERSION := 1.2.0
+LOKI_CHART_VERSION    := 18.13.7
+GRAFANA_CHART_VERSION := 13.2.7
+GRAFANA_CHARTS        := https://grafana-community.github.io/helm-charts
+PLATFORM              := deploy/platform
+HELM_INSTALL           = $(HELM) upgrade --install --wait --timeout 10m
 # Must be one of the images built for KIND_VERSION, pinned by digest (see kind release notes).
 KIND_NODE_IMAGE := kindest/node:v1.37.0@sha256:a1ed56cfb0e7b93589bdf97c8cd566405a265939e3620fc4f5de89adff580ae5
 
 BIN     := $(CURDIR)/bin
 KIND    := $(BIN)/kind-$(KIND_VERSION)
 KUBECTL := $(BIN)/kubectl-$(KUBECTL_VERSION)
+HELM    := $(BIN)/helm-$(HELM_VERSION)
 
 OS   := $(shell uname -s | tr '[:upper:]' '[:lower:]')
 ARCH := $(shell uname -m | sed -e 's/x86_64/amd64/' -e 's/aarch64/arm64/')
 
 export KUBECONFIG := $(KUBECONFIG_PATH)
+# Keep helm's config, cache and data out of $$HOME.
+export HELM_CONFIG_HOME := $(BIN)/.helm/config
+export HELM_CACHE_HOME  := $(BIN)/.helm/cache
+export HELM_DATA_HOME   := $(BIN)/.helm/data
 
 .PHONY: help
 help: ## Show this help
 	@grep -hE '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-12s\033[0m %s\n", $$1, $$2}'
 
 .PHONY: up
-up: cluster ## Bring the whole local stack up
+up: cluster platform ## Bring the whole local stack up
 	@echo "Spillway is up. export KUBECONFIG=$(KUBECONFIG_PATH)"
 
 .PHONY: down
@@ -63,6 +79,35 @@ cluster: docker-check $(KIND) $(KUBECTL) ## Create the kind cluster (idempotent)
 	$(KUBECTL) wait --for=condition=Ready nodes --all --timeout=120s
 	$(KUBECTL) get nodes -o wide
 
+.PHONY: platform
+platform: kafka loki grafana ## Install Kafka, Loki and Grafana (idempotent)
+
+.PHONY: kafka
+kafka: $(HELM) $(KUBECTL) ## Install the Strimzi operator and a single-node Kafka cluster
+	$(HELM_INSTALL) strimzi oci://quay.io/strimzi-helm/strimzi-kafka-operator \
+		--version $(STRIMZI_CHART_VERSION) --namespace kafka --create-namespace \
+		-f $(PLATFORM)/strimzi/values.yaml
+	$(KUBECTL) apply -f $(PLATFORM)/kafka/
+	$(KUBECTL) -n kafka wait kafka/spillway --for=condition=Ready --timeout=10m
+
+.PHONY: loki
+loki: $(HELM) ## Install Loki (monolithic, filesystem storage)
+	$(HELM_INSTALL) loki loki --repo $(GRAFANA_CHARTS) \
+		--version $(LOKI_CHART_VERSION) --namespace observability --create-namespace \
+		-f $(PLATFORM)/loki/values.yaml
+
+.PHONY: grafana
+grafana: $(HELM) ## Install Grafana with Loki as its datasource
+	$(HELM_INSTALL) grafana grafana --repo $(GRAFANA_CHARTS) \
+		--version $(GRAFANA_CHART_VERSION) --namespace observability --create-namespace \
+		-f $(PLATFORM)/grafana/values.yaml
+
+.PHONY: grafana-ui
+grafana-ui: $(KUBECTL) ## Port-forward Grafana to http://localhost:3000 and print the login
+	@echo "Grafana: http://localhost:3000  user: admin  password: $$($(KUBECTL) -n observability \
+		get secret grafana -o jsonpath='{.data.admin-password}' | base64 -d)"
+	$(KUBECTL) -n observability port-forward svc/grafana 3000:80
+
 .PHONY: kubeconfig
 kubeconfig: ## Print the path to the cluster kubeconfig
 	@echo $(KUBECONFIG_PATH)
@@ -74,7 +119,7 @@ docker-check:
 		exit 1; }
 
 .PHONY: tools
-tools: $(KIND) $(KUBECTL) ## Install pinned kind and kubectl into ./bin
+tools: $(KIND) $(KUBECTL) $(HELM) ## Install pinned kind, kubectl and helm into ./bin
 
 $(KIND):
 	@mkdir -p $(BIN)
@@ -87,3 +132,9 @@ $(KUBECTL):
 	curl -fsSLo $@ https://dl.k8s.io/release/$(KUBECTL_VERSION)/bin/$(OS)/$(ARCH)/kubectl
 	chmod +x $@
 	ln -sf $(notdir $@) $(BIN)/kubectl
+
+$(HELM):
+	@mkdir -p $(BIN)
+	curl -fsSL https://get.helm.sh/helm-$(HELM_VERSION)-$(OS)-$(ARCH).tar.gz | tar -xzO $(OS)-$(ARCH)/helm > $@
+	chmod +x $@
+	ln -sf $(notdir $@) $(BIN)/helm
