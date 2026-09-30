@@ -1,0 +1,94 @@
+# Wikimedia recentchange feeder: SSE stream -> Kafka topic wikimedia.recentchange.
+# The image tag is filled in by `make feeders` from a hash of the feeder source.
+apiVersion: kafka.strimzi.io/v1
+kind: KafkaTopic
+metadata:
+  name: wikimedia.recentchange
+  namespace: kafka
+  labels:
+    strimzi.io/cluster: spillway
+spec:
+  partitions: 3
+  replicas: 1
+  config:
+    retention.ms: 86400000        # 1 day
+    retention.bytes: 1073741824   # 1 GiB per partition, within the 10Gi broker volume
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: feeders
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: wikimedia-feeder
+  namespace: feeders
+  labels:
+    app.kubernetes.io/name: wikimedia-feeder
+    app.kubernetes.io/part-of: spillway
+spec:
+  replicas: 1
+  # Wikimedia limits concurrent connections per client; never run two at once.
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: wikimedia-feeder
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: wikimedia-feeder
+        app.kubernetes.io/part-of: spillway
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: feeder
+          image: spillway/wikimedia-feeder:dev
+          imagePullPolicy: Never   # loaded into kind by `make feeders`
+          env:
+            - name: KAFKA_BROKERS
+              value: spillway-kafka-bootstrap.kafka.svc:9092
+            - name: KAFKA_TOPIC
+              value: wikimedia.recentchange
+          ports:
+            - name: metrics
+              containerPort: 8080
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: metrics
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: metrics
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              memory: 256Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: wikimedia-feeder
+  namespace: feeders
+  labels:
+    app.kubernetes.io/name: wikimedia-feeder
+spec:
+  selector:
+    app.kubernetes.io/name: wikimedia-feeder
+  ports:
+    - name: metrics
+      port: 8080
+      targetPort: metrics
