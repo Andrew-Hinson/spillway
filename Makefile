@@ -8,6 +8,7 @@
 #   make grafana-ui  port-forward Grafana to localhost:3000
 #   make test        run Go unit tests (needs Go on the host)
 #   make vector-check validate and unit-test the Vector config (in Docker)
+#   make baseline    measure volume and latency over the last 15m (needs python3)
 #
 # Only Docker, curl and make are needed on the host. The cluster's kubeconfig is
 # written to ./.kubeconfig so your ~/.kube/config is never touched:
@@ -29,6 +30,7 @@ HELM_VERSION    := v4.3.0
 STRIMZI_CHART_VERSION := 1.2.0
 LOKI_CHART_VERSION    := 18.13.7
 GRAFANA_CHART_VERSION := 13.2.7
+PROMETHEUS_CHART_VERSION := 29.35.0
 VECTOR_CHART_VERSION  := 0.58.0
 VECTOR_IMAGE          := timberio/vector:0.58.0-distroless-libc
 GRAFANA_CHARTS        := https://grafana-community.github.io/helm-charts
@@ -90,7 +92,7 @@ cluster: docker-check $(KIND) $(KUBECTL) ## Create the kind cluster (idempotent)
 	$(KUBECTL) get nodes -o wide
 
 .PHONY: platform
-platform: kafka loki grafana ## Install Kafka, Loki and Grafana (idempotent)
+platform: kafka loki prometheus grafana ## Install Kafka, Loki, Prometheus and Grafana (idempotent)
 
 .PHONY: kafka
 kafka: $(HELM) $(KUBECTL) ## Install the Strimzi operator and a single-node Kafka cluster
@@ -106,8 +108,17 @@ loki: $(HELM) ## Install Loki (monolithic, filesystem storage)
 		--version $(LOKI_CHART_VERSION) --namespace observability --create-namespace \
 		-f $(PLATFORM)/loki/values.yaml
 
+.PHONY: prometheus
+prometheus: $(HELM) ## Install Prometheus (scrapes pods annotated prometheus.io/scrape)
+	$(HELM_INSTALL) prometheus prometheus --repo https://prometheus-community.github.io/helm-charts \
+		--version $(PROMETHEUS_CHART_VERSION) --namespace observability --create-namespace \
+		-f $(PLATFORM)/prometheus/values.yaml
+
 .PHONY: grafana
-grafana: $(HELM) ## Install Grafana with Loki as its datasource
+grafana: $(HELM) $(KUBECTL) ## Install Grafana with Loki and Prometheus datasources and the dashboards
+	$(KUBECTL) create namespace observability --dry-run=client -o yaml | $(KUBECTL) apply -f -
+	$(KUBECTL) -n observability create configmap grafana-dashboards \
+		--from-file=dashboards/ --dry-run=client -o yaml | $(KUBECTL) apply -f -
 	$(HELM_INSTALL) grafana grafana --repo $(GRAFANA_CHARTS) \
 		--version $(GRAFANA_CHART_VERSION) --namespace observability --create-namespace \
 		-f $(PLATFORM)/grafana/values.yaml
@@ -140,6 +151,12 @@ vector-check: docker-check ## Validate and unit-test the Vector config
 		validate --no-environment /vector/aggregator/vector.yaml
 	docker run --rm -v $(CURDIR)/vector:/vector:ro $(VECTOR_IMAGE) \
 		test /vector/aggregator/vector.yaml /vector/tests/aggregator.yaml
+
+.PHONY: baseline
+baseline: $(KUBECTL) ## Print volume and latency over the last WINDOW (default 15m) as Markdown
+	@$(KUBECTL) -n observability port-forward svc/prometheus-server 9090:80 >/dev/null 2>&1 & pf=$$!; \
+		trap 'kill $$pf' EXIT; sleep 2; \
+		python3 bench/baseline.py --window $(or $(WINDOW),15m)
 
 .PHONY: test
 test: ## Run Go unit tests

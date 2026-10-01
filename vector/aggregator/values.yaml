@@ -8,6 +8,10 @@ existingConfigMaps:
   - vector-aggregator-config
 dataDir: /vector-data-dir
 
+podAnnotations:
+  prometheus.io/scrape: "true"
+  prometheus.io/port: "9598"
+
 # Holds the disk buffer, so buffered events survive a restart.
 persistence:
   enabled: true
@@ -19,6 +23,10 @@ service:
       port: 8686
       protocol: TCP
       targetPort: 8686
+    - name: metrics
+      port: 9598
+      protocol: TCP
+      targetPort: 9598
 
 resources:
   requests:

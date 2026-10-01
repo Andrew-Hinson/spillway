@@ -40,6 +40,9 @@ spec:
       labels:
         app.kubernetes.io/name: wikimedia-feeder
         app.kubernetes.io/part-of: spillway
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8080"
     spec:
       automountServiceAccountToken: false
       securityContext:
