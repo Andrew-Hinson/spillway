@@ -35,6 +35,14 @@ sources:
     partition_key: ""
     offset_key: ""
     headers_key: ""
+    # Export kafka_consumer_lag per partition, for the dashboard.
+    metrics:
+      topic_lag_metric: true
+
+  # Vector's own metrics: events, bytes, errors and buffer sizes per component.
+  internal_metrics:
+    type: internal_metrics
+    scrape_interval_secs: 15
 
 transforms:
   # Last step before the sink: stamp the time the event leaves the pipeline,
@@ -51,6 +59,19 @@ transforms:
         .spillway.pipeline_latency_ms = to_unix_timestamp(sink_at, unit: "milliseconds") -
           to_unix_timestamp(produced_at, unit: "milliseconds")
       }
+
+  # Feeder-to-sink latency as a histogram, so Prometheus can compute
+  # quantiles without querying every log line in Loki.
+  latency_metrics:
+    type: log_to_metric
+    inputs: [stamp]
+    metrics:
+      - type: histogram
+        field: spillway.pipeline_latency_ms
+        namespace: spillway
+        name: pipeline_latency_milliseconds
+        tags:
+          feeder: "{{ spillway.feeder }}"
 
 sinks:
   loki:
@@ -75,3 +96,11 @@ sinks:
     # Commit Kafka offsets only once events are safely in the disk buffer.
     acknowledgements:
       enabled: true
+
+  # Scraped by Prometheus (see the pod annotations in values.yaml).
+  prometheus:
+    type: prometheus_exporter
+    inputs: [internal_metrics, latency_metrics]
+    address: 0.0.0.0:9598
+    # Milliseconds; fine-grained below 100ms, where steady-state latency sits.
+    buckets: [1, 2.5, 5, 10, 15, 20, 30, 50, 75, 100, 150, 250, 500, 1000, 2500, 5000, 10000, 30000, 60000]
