@@ -1,0 +1,9 @@
+# Activated by mise when you cd into the repo (run `mise trust` once).
+# Puts the Makefile's pinned kind, kubectl and helm on PATH and points them at
+# the local cluster, so kubectl, helm and k9s work without extra flags.
+[tools]
+go = "1.27"
+
+[env]
+_.path = ["{{config_root}}/bin"]
+KUBECONFIG = "{{config_root}}/.kubeconfig"

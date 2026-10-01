@@ -1,10 +1,11 @@
 # Spillway local environment.
 #
-#   make up          create the kind cluster and install Kafka, Loki and Grafana
-#                    (installs pinned kind, kubectl and helm into ./bin)
+#   make up          create the kind cluster, install Kafka, Loki and Grafana,
+#                    and deploy the feeders (pinned kind, kubectl, helm in ./bin)
 #   make down        delete the cluster and its kubeconfig
 #   make clean       make down, then remove ./bin
 #   make grafana-ui  port-forward Grafana to localhost:3000
+#   make test        run Go unit tests (needs Go on the host)
 #
 # Only Docker, curl and make are needed on the host. The cluster's kubeconfig is
 # written to ./.kubeconfig so your ~/.kube/config is never touched:
@@ -29,6 +30,11 @@ GRAFANA_CHART_VERSION := 13.2.7
 GRAFANA_CHARTS        := https://grafana-community.github.io/helm-charts
 PLATFORM              := deploy/platform
 HELM_INSTALL           = $(HELM) upgrade --install --wait --timeout 10m
+
+# Feeder images are tagged with a hash of their source, so the Deployment only
+# rolls when the code changes.
+WIKIMEDIA_IMAGE := spillway/wikimedia-feeder
+WIKIMEDIA_TAG    = $(shell cat go.mod go.sum $$(find feeders/wikimedia -type f | sort) | sha256sum | cut -c1-12)
 # Must be one of the images built for KIND_VERSION, pinned by digest (see kind release notes).
 KIND_NODE_IMAGE := kindest/node:v1.37.0@sha256:a1ed56cfb0e7b93589bdf97c8cd566405a265939e3620fc4f5de89adff580ae5
 
@@ -48,10 +54,10 @@ export HELM_DATA_HOME   := $(BIN)/.helm/data
 
 .PHONY: help
 help: ## Show this help
-	@grep -hE '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-12s\033[0m %s\n", $$1, $$2}'
+	@grep -hE '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-18s\033[0m %s\n", $$1, $$2}'
 
 .PHONY: up
-up: cluster platform ## Bring the whole local stack up
+up: cluster platform feeders ## Bring the whole local stack up
 	@echo "Spillway is up. export KUBECONFIG=$(KUBECONFIG_PATH)"
 
 .PHONY: down
@@ -101,6 +107,21 @@ grafana: $(HELM) ## Install Grafana with Loki as its datasource
 	$(HELM_INSTALL) grafana grafana --repo $(GRAFANA_CHARTS) \
 		--version $(GRAFANA_CHART_VERSION) --namespace observability --create-namespace \
 		-f $(PLATFORM)/grafana/values.yaml
+
+.PHONY: feeders
+feeders: wikimedia-feeder ## Build and deploy the feeders
+
+.PHONY: wikimedia-feeder
+wikimedia-feeder: docker-check $(KIND) $(KUBECTL) ## Build, load and deploy the Wikimedia feeder
+	docker build -q -t $(WIKIMEDIA_IMAGE):$(WIKIMEDIA_TAG) -f feeders/wikimedia/Dockerfile .
+	$(KIND) load docker-image $(WIKIMEDIA_IMAGE):$(WIKIMEDIA_TAG) --name $(CLUSTER_NAME)
+	sed 's|$(WIKIMEDIA_IMAGE):dev|$(WIKIMEDIA_IMAGE):$(WIKIMEDIA_TAG)|' deploy/feeders/wikimedia.yaml | $(KUBECTL) apply -f -
+	$(KUBECTL) -n kafka wait kafkatopic/wikimedia.recentchange --for=condition=Ready --timeout=2m
+	$(KUBECTL) -n feeders rollout status deployment/wikimedia-feeder --timeout=3m
+
+.PHONY: test
+test: ## Run Go unit tests
+	go test -race ./...
 
 .PHONY: grafana-ui
 grafana-ui: $(KUBECTL) ## Port-forward Grafana to http://localhost:3000 and print the login
