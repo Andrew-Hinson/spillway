@@ -1,0 +1,28 @@
+# Helm values for the Vector aggregator (chart: vector, https://helm.vector.dev).
+# The pipeline itself is vector.yaml next to this file, mounted from a
+# ConfigMap that `make aggregator` creates.
+role: Aggregator
+replicas: 1
+
+existingConfigMaps:
+  - vector-aggregator-config
+dataDir: /vector-data-dir
+
+# Holds the disk buffer, so buffered events survive a restart.
+persistence:
+  enabled: true
+  size: 2Gi
+
+service:
+  ports:
+    - name: api
+      port: 8686
+      protocol: TCP
+      targetPort: 8686
+
+resources:
+  requests:
+    cpu: 200m
+    memory: 256Mi
+  limits:
+    memory: 1Gi

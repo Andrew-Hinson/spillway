@@ -67,7 +67,7 @@ Each line is one GitHub issue: the title, then the acceptance criteria after the
 1. [x] Bootstrap repo, kind cluster, Makefile — `make up` works from a clean checkout; `make down` leaves nothing behind
 2. [x] Install Kafka (Strimzi), Loki and Grafana via Helm — all healthy after `make up`, storage persisted
 3. [x] Wikimedia feeder in Go — reads the recentchange stream, produces to Kafka, reconnects on drop, stamps every event with a unique ID and a produce timestamp, exports a produced-count metric
-4. [ ] Vector aggregator: Kafka to Loki — events parsed as JSON and queryable in Grafana; each event stamped with a pre-sink timestamp for latency measurement
+4. [x] Vector aggregator: Kafka to Loki — events parsed as JSON and queryable in Grafana; each event stamped with a pre-sink timestamp for latency measurement
 5. [ ] Vector self-monitoring — internal metrics scraped, starter dashboard for throughput, errors and buffer size; baseline bytes-in and latency recorded
 6. [ ] CI baseline — lint, unit tests and `vector validate` on every PR
 7. [ ] Vector agent DaemonSet — pod logs reach the aggregator with namespace and pod labels attached (not needed for the M1 gate; can slip to M2 if M1 runs long)
