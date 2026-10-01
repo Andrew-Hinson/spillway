@@ -1,11 +1,13 @@
 # Spillway local environment.
 #
 #   make up          create the kind cluster, install Kafka, Loki and Grafana,
-#                    and deploy the feeders (pinned kind, kubectl, helm in ./bin)
+#                    deploy the feeders and the Vector aggregator
+#                    (pinned kind, kubectl, helm in ./bin)
 #   make down        delete the cluster and its kubeconfig
 #   make clean       make down, then remove ./bin
 #   make grafana-ui  port-forward Grafana to localhost:3000
 #   make test        run Go unit tests (needs Go on the host)
+#   make vector-check validate and unit-test the Vector config (in Docker)
 #
 # Only Docker, curl and make are needed on the host. The cluster's kubeconfig is
 # written to ./.kubeconfig so your ~/.kube/config is never touched:
@@ -27,6 +29,8 @@ HELM_VERSION    := v4.3.0
 STRIMZI_CHART_VERSION := 1.2.0
 LOKI_CHART_VERSION    := 18.13.7
 GRAFANA_CHART_VERSION := 13.2.7
+VECTOR_CHART_VERSION  := 0.58.0
+VECTOR_IMAGE          := timberio/vector:0.58.0-distroless-libc
 GRAFANA_CHARTS        := https://grafana-community.github.io/helm-charts
 PLATFORM              := deploy/platform
 HELM_INSTALL           = $(HELM) upgrade --install --wait --timeout 10m
@@ -54,10 +58,10 @@ export HELM_DATA_HOME   := $(BIN)/.helm/data
 
 .PHONY: help
 help: ## Show this help
-	@grep -hE '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-18s\033[0m %s\n", $$1, $$2}'
+	@grep -hE '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-20s\033[0m %s\n", $$1, $$2}'
 
 .PHONY: up
-up: cluster platform feeders ## Bring the whole local stack up
+up: cluster platform feeders aggregator ## Bring the whole local stack up
 	@echo "Spillway is up. export KUBECONFIG=$(KUBECONFIG_PATH)"
 
 .PHONY: down
@@ -118,6 +122,24 @@ wikimedia-feeder: docker-check $(KIND) $(KUBECTL) ## Build, load and deploy the 
 	sed 's|$(WIKIMEDIA_IMAGE):dev|$(WIKIMEDIA_IMAGE):$(WIKIMEDIA_TAG)|' deploy/feeders/wikimedia.yaml | $(KUBECTL) apply -f -
 	$(KUBECTL) -n kafka wait kafkatopic/wikimedia.recentchange --for=condition=Ready --timeout=2m
 	$(KUBECTL) -n feeders rollout status deployment/wikimedia-feeder --timeout=3m
+
+.PHONY: aggregator
+aggregator: $(HELM) $(KUBECTL) ## Deploy the Vector aggregator (Kafka -> Loki)
+	$(KUBECTL) create namespace vector --dry-run=client -o yaml | $(KUBECTL) apply -f -
+	$(KUBECTL) -n vector create configmap vector-aggregator-config \
+		--from-file=vector/aggregator/vector.yaml --dry-run=client -o yaml | $(KUBECTL) apply -f -
+	@# The config hash annotation rolls the pod when vector.yaml changes.
+	$(HELM_INSTALL) vector-aggregator vector --repo https://helm.vector.dev \
+		--version $(VECTOR_CHART_VERSION) --namespace vector \
+		-f vector/aggregator/values.yaml \
+		--set-string 'podAnnotations.checksum/config=$(shell sha256sum vector/aggregator/vector.yaml | cut -c1-12)'
+
+.PHONY: vector-check
+vector-check: docker-check ## Validate and unit-test the Vector config
+	docker run --rm -v $(CURDIR)/vector:/vector:ro $(VECTOR_IMAGE) \
+		validate --no-environment /vector/aggregator/vector.yaml
+	docker run --rm -v $(CURDIR)/vector:/vector:ro $(VECTOR_IMAGE) \
+		test /vector/aggregator/vector.yaml /vector/tests/aggregator.yaml
 
 .PHONY: test
 test: ## Run Go unit tests

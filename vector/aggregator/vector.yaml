@@ -1,0 +1,77 @@
+# Spillway aggregator: Kafka -> Loki.
+data_dir: /vector-data-dir
+
+# Vector keeps each event's timestamp in a body field, "timestamp" by default.
+# Upstream events have their own "timestamp" (Wikimedia's is Unix seconds), so
+# Vector's goes under a reserved name instead. Sources fill it in (Kafka: the
+# record time, i.e. the feeder's produced_at) and the Loki sink uses it as the
+# entry time, then strips it from the stored line.
+#
+# Log namespacing would avoid the clash too, but in Vector 0.58 the timestamp
+# it marks is lost when events pass through a disk buffer, and Loki then falls
+# back to arrival time.
+log_schema:
+  timestamp_key: _timestamp
+
+api:
+  enabled: true
+  address: 0.0.0.0:8686
+
+sources:
+  wikimedia:
+    type: kafka
+    bootstrap_servers: spillway-kafka-bootstrap.kafka.svc:9092
+    group_id: spillway-aggregator
+    topics: [wikimedia.recentchange]
+    # A new consumer group starts from the oldest retained event; after that,
+    # committed offsets are used so restarts lose nothing.
+    auto_offset_reset: earliest
+    decoding:
+      codec: json
+    # Don't add Kafka metadata to the event body: it would overwrite upstream
+    # fields with the same names and inflate every stored line.
+    key_field: ""
+    topic_key: ""
+    partition_key: ""
+    offset_key: ""
+    headers_key: ""
+
+transforms:
+  # Last step before the sink: stamp the time the event leaves the pipeline,
+  # so sink_at - produced_at is the feeder-to-sink latency.
+  stamp:
+    type: remap
+    inputs: [wikimedia]
+    source: |
+      del(.source_type)
+      sink_at = now()
+      .spillway.sink_at = sink_at
+      produced_at, err = parse_timestamp(.spillway.produced_at, "%+")
+      if err == null {
+        .spillway.pipeline_latency_ms = to_unix_timestamp(sink_at, unit: "milliseconds") -
+          to_unix_timestamp(produced_at, unit: "milliseconds")
+      }
+
+sinks:
+  loki:
+    type: loki
+    inputs: [stamp]
+    endpoint: http://loki.observability.svc:3100
+    encoding:
+      codec: json
+    # Keep labels low-cardinality: Loki indexes streams by label set. Everything
+    # else (wiki, title, user, ...) stays in the JSON line for `| json` queries.
+    labels:
+      feeder: "{{ spillway.feeder }}"
+      type: "{{ type }}"
+    out_of_order_action: accept
+    batch:
+      timeout_secs: 1
+    # Survive Loki outages and aggregator restarts without dropping events.
+    buffer:
+      type: disk
+      max_size: 1073741824 # 1 GiB
+      when_full: block
+    # Commit Kafka offsets only once events are safely in the disk buffer.
+    acknowledgements:
+      enabled: true

@@ -1,0 +1,40 @@
+# Unit tests for vector/aggregator/vector.yaml. Run with `make vector-check`.
+tests:
+  - name: stamp adds sink time and pipeline latency
+    inputs:
+      - insert_at: stamp
+        type: vrl
+        source: |
+          . = {
+            "title": "Example",
+            "type": "edit",
+            "spillway": {
+              "event_id": "abc",
+              "produced_at": "2026-01-01T00:00:00.123456789Z",
+              "feeder": "wikimedia"
+            }
+          }
+    outputs:
+      - extract_from: stamp
+        conditions:
+          - type: vrl
+            source: |
+              assert!(is_timestamp(.spillway.sink_at))
+              assert!(is_integer(.spillway.pipeline_latency_ms))
+              assert!(int!(.spillway.pipeline_latency_ms) > 0)
+              assert_eq!(.spillway.event_id, "abc")
+              assert_eq!(.title, "Example")
+
+  - name: stamp tolerates events without a produce timestamp
+    inputs:
+      - insert_at: stamp
+        type: vrl
+        source: |
+          . = {"title": "No stamp"}
+    outputs:
+      - extract_from: stamp
+        conditions:
+          - type: vrl
+            source: |
+              assert!(is_timestamp(.spillway.sink_at))
+              assert!(!exists(.spillway.pipeline_latency_ms))
