@@ -55,6 +55,8 @@ func TestStreamReconnectResumes(t *testing.T) {
 	defer srv.Close()
 
 	s := testStream(srv.URL)
+	levels := &levelRecorder{}
+	s.Log = slog.New(levels)
 	ctx, cancel := context.WithCancel(context.Background())
 	var got []string
 	s.Run(ctx, func(ev Event) {
@@ -76,6 +78,35 @@ func TestStreamReconnectResumes(t *testing.T) {
 	if n := testutil.ToFloat64(s.Metrics.reconnects); n != 3 {
 		t.Errorf("reconnects = %v, want 3", n)
 	}
+	// Connections that delivered an event then closed are routine; the refused one is not.
+	wantLevels := []slog.Level{slog.LevelInfo, slog.LevelWarn, slog.LevelInfo}
+	if fmt.Sprint(levels.get()) != fmt.Sprint(wantLevels) {
+		t.Errorf("disconnect log levels = %v, want %v", levels.get(), wantLevels)
+	}
+}
+
+// levelRecorder is a slog.Handler that records the level of each disconnect log.
+type levelRecorder struct {
+	mu     sync.Mutex
+	levels []slog.Level
+}
+
+func (r *levelRecorder) Enabled(context.Context, slog.Level) bool { return true }
+func (r *levelRecorder) WithAttrs([]slog.Attr) slog.Handler       { return r }
+func (r *levelRecorder) WithGroup(string) slog.Handler            { return r }
+func (r *levelRecorder) Handle(_ context.Context, rec slog.Record) error {
+	if rec.Message == "stream disconnected; reconnecting" {
+		r.mu.Lock()
+		r.levels = append(r.levels, rec.Level)
+		r.mu.Unlock()
+	}
+	return nil
+}
+
+func (r *levelRecorder) get() []slog.Level {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]slog.Level(nil), r.levels...)
 }
 
 // TestStreamIdleTimeout checks a connection that goes silent is dropped and re-established.

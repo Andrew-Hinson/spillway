@@ -45,7 +45,14 @@ func (s *Stream) Run(ctx context.Context, fn func(Event)) {
 		// Full jitter over the upper half, so restarts don't reconnect in lockstep.
 		wait := backoff/2 + rand.N(backoff/2+1)
 		s.Metrics.reconnects.Inc()
-		s.Log.Warn("stream disconnected; reconnecting",
+		// Wikimedia routinely closes healthy connections (every ~15 minutes, or
+		// on load balancer rotation), so a connection that delivered events and
+		// then ended is expected. Failing to connect, or going silent, is not.
+		level := slog.LevelInfo
+		if delivered == 0 || errors.Is(err, errIdle) {
+			level = slog.LevelWarn
+		}
+		s.Log.Log(ctx, level, "stream disconnected; reconnecting",
 			"err", err, "delivered", delivered, "retry_in", wait.Round(time.Millisecond))
 		select {
 		case <-ctx.Done():
