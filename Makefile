@@ -7,6 +7,7 @@
 #   make clean       make down, then remove ./bin
 #   make grafana-ui  port-forward Grafana to localhost:3000
 #   make test        run Go unit tests (needs Go on the host)
+#   make lint        lint the Go code (pinned golangci-lint in ./bin)
 #   make vector-check validate and unit-test the Vector config (in Docker)
 #   make baseline    measure volume and latency over the last 15m (needs python3)
 #
@@ -25,6 +26,7 @@ KUBECONFIG_PATH := $(CURDIR)/.kubeconfig
 KIND_VERSION    := v0.33.0
 KUBECTL_VERSION := v1.37.1
 HELM_VERSION    := v4.3.0
+GOLANGCI_LINT_VERSION := v2.14.0
 
 # Platform charts.
 STRIMZI_CHART_VERSION := 1.2.0
@@ -48,6 +50,7 @@ BIN     := $(CURDIR)/bin
 KIND    := $(BIN)/kind-$(KIND_VERSION)
 KUBECTL := $(BIN)/kubectl-$(KUBECTL_VERSION)
 HELM    := $(BIN)/helm-$(HELM_VERSION)
+GOLANGCI_LINT := $(BIN)/golangci-lint-$(GOLANGCI_LINT_VERSION)
 
 OS   := $(shell uname -s | tr '[:upper:]' '[:lower:]')
 ARCH := $(shell uname -m | sed -e 's/x86_64/amd64/' -e 's/aarch64/arm64/')
@@ -162,6 +165,10 @@ baseline: $(KUBECTL) ## Print volume and latency over the last WINDOW (default 1
 test: ## Run Go unit tests
 	go test -race ./...
 
+.PHONY: lint
+lint: $(GOLANGCI_LINT) ## Lint the Go code
+	$(GOLANGCI_LINT) run ./...
+
 .PHONY: grafana-ui
 grafana-ui: $(KUBECTL) ## Port-forward Grafana to http://localhost:3000 and print the login
 	@echo "Grafana: http://localhost:3000  user: admin  password: $$($(KUBECTL) -n observability \
@@ -179,7 +186,7 @@ docker-check:
 		exit 1; }
 
 .PHONY: tools
-tools: $(KIND) $(KUBECTL) $(HELM) ## Install pinned kind, kubectl and helm into ./bin
+tools: $(KIND) $(KUBECTL) $(HELM) $(GOLANGCI_LINT) ## Install pinned kind, kubectl, helm and golangci-lint into ./bin
 
 $(KIND):
 	@mkdir -p $(BIN)
@@ -198,3 +205,10 @@ $(HELM):
 	curl -fsSL https://get.helm.sh/helm-$(HELM_VERSION)-$(OS)-$(ARCH).tar.gz | tar -xzO $(OS)-$(ARCH)/helm > $@
 	chmod +x $@
 	ln -sf $(notdir $@) $(BIN)/helm
+
+$(GOLANGCI_LINT):
+	@mkdir -p $(BIN)
+	curl -fsSL https://github.com/golangci/golangci-lint/releases/download/$(GOLANGCI_LINT_VERSION)/golangci-lint-$(GOLANGCI_LINT_VERSION:v%=%)-$(OS)-$(ARCH).tar.gz \
+		| tar -xzO golangci-lint-$(GOLANGCI_LINT_VERSION:v%=%)-$(OS)-$(ARCH)/golangci-lint > $@
+	chmod +x $@
+	ln -sf $(notdir $@) $(BIN)/golangci-lint

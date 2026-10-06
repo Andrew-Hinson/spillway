@@ -69,7 +69,7 @@ Each line is one GitHub issue: the title, then the acceptance criteria after the
 3. [x] Wikimedia feeder in Go — reads the recentchange stream, produces to Kafka, reconnects on drop, stamps every event with a unique ID and a produce timestamp, exports a produced-count metric
 4. [x] Vector aggregator: Kafka to Loki — events parsed as JSON and queryable in Grafana; each event stamped with a pre-sink timestamp for latency measurement
 5. [x] Vector self-monitoring — internal metrics scraped, starter dashboard for throughput, errors and buffer size; baseline bytes-in and latency recorded
-6. [ ] CI baseline — lint, unit tests and `vector validate` on every PR
+6. [x] CI baseline — lint, unit tests and `vector validate` on every PR
 7. [ ] Vector agent DaemonSet — pod logs reach the aggregator with namespace and pod labels attached (not needed for the M1 gate; can slip to M2 if M1 runs long)
 
 ### M2 — The operator
