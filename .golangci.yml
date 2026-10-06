@@ -1,0 +1,18 @@
+version: "2"
+
+linters:
+  default: standard
+  settings:
+    errcheck:
+      # Writes to an HTTP response and closes of read-only bodies have nothing
+      # useful to do with an error.
+      exclude-functions:
+        - (net/http.ResponseWriter).Write
+        - (io.Closer).Close
+        - fmt.Fprint
+        - fmt.Fprintf
+
+formatters:
+  enable:
+    - gofmt
+    - goimports
