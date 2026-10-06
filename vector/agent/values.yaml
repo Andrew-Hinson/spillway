@@ -1,0 +1,34 @@
+# Helm values for the Vector agent (chart: vector, https://helm.vector.dev).
+# The pipeline itself is vector.yaml next to this file, mounted from a
+# ConfigMap that `make agent` creates. The chart adds the RBAC the
+# kubernetes_logs source needs and mounts the node's /var/log and /var/lib.
+role: Agent
+
+existingConfigMaps:
+  - vector-agent-config
+# A hostPath on each node: file checkpoints and the disk buffer outlive the pod.
+dataDir: /vector-data-dir
+
+# Run on the control plane too, so its pods' logs are collected.
+tolerations:
+  - key: node-role.kubernetes.io/control-plane
+    operator: Exists
+    effect: NoSchedule
+
+podAnnotations:
+  prometheus.io/scrape: "true"
+  prometheus.io/port: "9598"
+
+resources:
+  requests:
+    cpu: 50m
+    memory: 64Mi
+  limits:
+    memory: 256Mi
+
+# Nothing connects to the agents (Prometheus scrapes the pods directly), and
+# the chart's Service would have no ports, which the API server rejects.
+service:
+  enabled: false
+serviceHeadless:
+  enabled: false

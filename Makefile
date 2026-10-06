@@ -1,7 +1,7 @@
 # Spillway local environment.
 #
 #   make up          create the kind cluster, install Kafka, Loki and Grafana,
-#                    deploy the feeders and the Vector aggregator
+#                    deploy the feeders, the Vector aggregator and the agents
 #                    (pinned kind, kubectl, helm in ./bin)
 #   make down        delete the cluster and its kubeconfig
 #   make clean       make down, then remove ./bin
@@ -66,7 +66,7 @@ help: ## Show this help
 	@grep -hE '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-20s\033[0m %s\n", $$1, $$2}'
 
 .PHONY: up
-up: cluster platform feeders aggregator ## Bring the whole local stack up
+up: cluster platform feeders aggregator agent ## Bring the whole local stack up
 	@echo "Spillway is up. export KUBECONFIG=$(KUBECONFIG_PATH)"
 
 .PHONY: down
@@ -148,10 +148,22 @@ aggregator: $(HELM) $(KUBECTL) ## Deploy the Vector aggregator (Kafka -> Loki)
 		-f vector/aggregator/values.yaml \
 		--set-string 'podAnnotations.checksum/config=$(shell sha256sum vector/aggregator/vector.yaml | cut -c1-12)'
 
+.PHONY: agent
+agent: $(HELM) $(KUBECTL) ## Deploy the Vector agent DaemonSet (pod logs -> aggregator)
+	$(KUBECTL) create namespace vector --dry-run=client -o yaml | $(KUBECTL) apply -f -
+	$(KUBECTL) -n vector create configmap vector-agent-config \
+		--from-file=vector/agent/vector.yaml --dry-run=client -o yaml | $(KUBECTL) apply -f -
+	$(HELM_INSTALL) vector-agent vector --repo https://helm.vector.dev \
+		--version $(VECTOR_CHART_VERSION) --namespace vector \
+		-f vector/agent/values.yaml \
+		--set-string 'podAnnotations.checksum/config=$(shell sha256sum vector/agent/vector.yaml | cut -c1-12)'
+
 .PHONY: vector-check
-vector-check: docker-check ## Validate and unit-test the Vector config
+vector-check: docker-check ## Validate and unit-test the Vector configs
 	docker run --rm -v $(CURDIR)/vector:/vector:ro $(VECTOR_IMAGE) \
 		validate --no-environment /vector/aggregator/vector.yaml
+	docker run --rm -v $(CURDIR)/vector:/vector:ro -e VECTOR_SELF_NODE_NAME=ci $(VECTOR_IMAGE) \
+		validate --no-environment /vector/agent/vector.yaml
 	docker run --rm -v $(CURDIR)/vector:/vector:ro $(VECTOR_IMAGE) \
 		test /vector/aggregator/vector.yaml /vector/tests/aggregator.yaml
 

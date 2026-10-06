@@ -1,4 +1,4 @@
-# Spillway aggregator: Kafka -> Loki.
+# Spillway aggregator: Kafka -> Loki, and pod logs from the agents -> Loki.
 data_dir: /vector-data-dir
 
 # Vector keeps each event's timestamp in a body field, "timestamp" by default.
@@ -39,6 +39,11 @@ sources:
     metrics:
       topic_lag_metric: true
 
+  # Pod logs forwarded by the agent DaemonSet (vector/agent/vector.yaml).
+  agents:
+    type: vector
+    address: 0.0.0.0:6000
+
   # Vector's own metrics: events, bytes, errors and buffer sizes per component.
   internal_metrics:
     type: internal_metrics
@@ -58,6 +63,24 @@ transforms:
       if err == null {
         .spillway.pipeline_latency_ms = to_unix_timestamp(sink_at, unit: "milliseconds") -
           to_unix_timestamp(produced_at, unit: "milliseconds")
+      }
+
+  # Keep what's useful from a pod log line and drop the rest of the Kubernetes
+  # metadata (pod labels, annotations, IPs, UIDs), which would otherwise
+  # outweigh the message itself.
+  pod_logs:
+    type: remap
+    inputs: [agents]
+    source: |
+      k = object(.kubernetes) ?? {}
+      . = {
+        "_timestamp": ._timestamp,
+        "message": .message,
+        "stream": .stream,
+        "node": k.pod_node_name,
+        "namespace": k.pod_namespace,
+        "pod": k.pod_name,
+        "container": k.container_name
       }
 
   # Feeder-to-sink latency as a histogram, so Prometheus can compute
@@ -94,6 +117,33 @@ sinks:
       max_size: 1073741824 # 1 GiB
       when_full: block
     # Commit Kafka offsets only once events are safely in the disk buffer.
+    acknowledgements:
+      enabled: true
+
+  # Pod logs go to their own sink and buffer, so a burst of pod logs never
+  # queues behind (or ahead of) the feeder events and their latency numbers.
+  loki_pods:
+    type: loki
+    inputs: [pod_logs]
+    endpoint: http://loki.observability.svc:3100
+    encoding:
+      codec: json
+    # Pod names change on every rollout, but a local cluster runs few enough
+    # pods that the stream count stays small.
+    labels:
+      namespace: "{{ namespace }}"
+      pod: "{{ pod }}"
+      container: "{{ container }}"
+    remove_label_fields: true
+    out_of_order_action: accept
+    batch:
+      timeout_secs: 1
+    buffer:
+      type: disk
+      max_size: 536870912 # 512 MiB
+      when_full: block
+    # Answer an agent's batch only once it's in this buffer; until then the
+    # agent keeps it in its own disk buffer.
     acknowledgements:
       enabled: true
 

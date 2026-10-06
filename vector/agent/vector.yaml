@@ -1,0 +1,39 @@
+# Spillway agent: pod logs on every node -> the aggregator.
+data_dir: /vector-data-dir
+
+# Same timestamp key as the aggregator (see vector/aggregator/vector.yaml), so
+# the log time set here is the one the aggregator's Loki sink uses.
+log_schema:
+  timestamp_key: _timestamp
+
+sources:
+  # Tails /var/log/pods on this node and adds pod metadata from the API.
+  # Pods labelled vector.dev/exclude=true (the agents themselves) are skipped,
+  # so the agent never reads its own output.
+  pods:
+    type: kubernetes_logs
+    self_node_name: ${VECTOR_SELF_NODE_NAME}
+
+  internal_metrics:
+    type: internal_metrics
+    scrape_interval_secs: 15
+
+sinks:
+  aggregator:
+    type: vector
+    inputs: [pods]
+    address: vector-aggregator.vector.svc:6000
+    # Hold logs on the node while the aggregator is down or rolling. A batch
+    # leaves this buffer only once the aggregator has it in its own disk
+    # buffer. (kubernetes_logs can't take end-to-end acknowledgements, so file
+    # checkpoints don't wait for delivery; this buffer is what protects them.)
+    buffer:
+      type: disk
+      max_size: 268435488 # 256 MiB, the minimum for a disk buffer
+      when_full: block
+
+  # Scraped by Prometheus (see the pod annotations in values.yaml).
+  prometheus:
+    type: prometheus_exporter
+    inputs: [internal_metrics]
+    address: 0.0.0.0:9598
