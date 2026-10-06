@@ -1,0 +1,22 @@
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: spillway-operator
+rules:
+- apiGroups:
+  - spillway.dev
+  resources:
+  - logpipelines
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - spillway.dev
+  resources:
+  - logpipelines/status
+  verbs:
+  - get
+  - patch
+  - update
