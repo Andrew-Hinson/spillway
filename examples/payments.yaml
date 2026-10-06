@@ -1,0 +1,23 @@
+# Payments: pod logs from its own namespaces, with every PII pattern masked,
+# debug dropped, a quarter of info kept, and a full copy in cold storage.
+apiVersion: spillway.dev/v1alpha1
+kind: LogPipeline
+metadata:
+  name: payments
+spec:
+  team: payments
+  sources:
+    - name: services
+      kubernetes:
+        namespaces: [payments, payments-batch]
+  redaction:
+    patterns: [ssn, email, phone, memberId]
+  sampling:
+    keepPercent:
+      debug: 0
+      info: 25
+  budget:
+    maxEventsPerSec: 500
+  routing:
+    hot: true
+    cold: true

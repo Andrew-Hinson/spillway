@@ -1,12 +1,15 @@
 # Spillway local environment.
 #
 #   make up          create the kind cluster, install Kafka, Loki and Grafana,
-#                    deploy the feeders, the Vector aggregator and the agents
+#                    deploy the feeders, the Vector aggregator, the agents and
+#                    the operator
 #                    (pinned kind, kubectl, helm in ./bin)
 #   make down        delete the cluster and its kubeconfig
 #   make clean       make down, then remove ./bin
 #   make grafana-ui  port-forward Grafana to localhost:3000
-#   make test        run Go unit tests (needs Go on the host)
+#   make test        run Go unit tests, CRD validation against a local API server
+#                    (needs Go on the host)
+#   make generate    regenerate deepcopy code, the CRD and operator RBAC
 #   make lint        lint the Go code (pinned golangci-lint in ./bin)
 #   make vector-check validate and unit-test the Vector config (in Docker)
 #   make baseline    measure volume and latency over the last 15m (needs python3)
@@ -27,6 +30,11 @@ KIND_VERSION    := v0.33.0
 KUBECTL_VERSION := v1.37.1
 HELM_VERSION    := v4.3.0
 GOLANGCI_LINT_VERSION := v2.14.0
+CONTROLLER_GEN_VERSION := v0.22.0
+SETUP_ENVTEST_VERSION  := v0.25.2
+# Kubernetes version of the API server the CRD validation tests run against;
+# matches the kind node image.
+ENVTEST_K8S_VERSION    := 1.37.0
 
 # Platform charts.
 STRIMZI_CHART_VERSION := 1.2.0
@@ -43,6 +51,8 @@ HELM_INSTALL           = $(HELM) upgrade --install --wait --timeout 10m
 # rolls when the code changes.
 WIKIMEDIA_IMAGE := spillway/wikimedia-feeder
 WIKIMEDIA_TAG    = $(shell cat go.mod go.sum $$(find feeders/wikimedia -type f | sort) | sha256sum | cut -c1-12)
+OPERATOR_IMAGE  := spillway/operator
+OPERATOR_TAG     = $(shell cat go.mod go.sum $$(find api cmd/operator internal -type f | sort) | sha256sum | cut -c1-12)
 # Must be one of the images built for KIND_VERSION, pinned by digest (see kind release notes).
 KIND_NODE_IMAGE := kindest/node:v1.37.0@sha256:a1ed56cfb0e7b93589bdf97c8cd566405a265939e3620fc4f5de89adff580ae5
 
@@ -51,6 +61,8 @@ KIND    := $(BIN)/kind-$(KIND_VERSION)
 KUBECTL := $(BIN)/kubectl-$(KUBECTL_VERSION)
 HELM    := $(BIN)/helm-$(HELM_VERSION)
 GOLANGCI_LINT := $(BIN)/golangci-lint-$(GOLANGCI_LINT_VERSION)
+CONTROLLER_GEN := $(BIN)/controller-gen-$(CONTROLLER_GEN_VERSION)
+SETUP_ENVTEST  := $(BIN)/setup-envtest-$(SETUP_ENVTEST_VERSION)
 
 OS   := $(shell uname -s | tr '[:upper:]' '[:lower:]')
 ARCH := $(shell uname -m | sed -e 's/x86_64/amd64/' -e 's/aarch64/arm64/')
@@ -66,7 +78,7 @@ help: ## Show this help
 	@grep -hE '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-20s\033[0m %s\n", $$1, $$2}'
 
 .PHONY: up
-up: cluster platform feeders aggregator agent ## Bring the whole local stack up
+up: cluster platform feeders aggregator agent operator ## Bring the whole local stack up
 	@echo "Spillway is up. export KUBECONFIG=$(KUBECONFIG_PATH)"
 
 .PHONY: down
@@ -158,6 +170,16 @@ agent: $(HELM) $(KUBECTL) ## Deploy the Vector agent DaemonSet (pod logs -> aggr
 		-f vector/agent/values.yaml \
 		--set-string 'podAnnotations.checksum/config=$(shell sha256sum vector/agent/vector.yaml | cut -c1-12)'
 
+.PHONY: operator
+operator: docker-check $(KIND) $(KUBECTL) ## Build, load and deploy the operator and the LogPipeline CRD
+	docker build -q -t $(OPERATOR_IMAGE):$(OPERATOR_TAG) -f cmd/operator/Dockerfile .
+	$(KIND) load docker-image $(OPERATOR_IMAGE):$(OPERATOR_TAG) --name $(CLUSTER_NAME)
+	$(KUBECTL) apply --server-side -f deploy/operator/crd
+	$(KUBECTL) wait crd/logpipelines.spillway.dev --for=condition=Established --timeout=1m
+	$(KUBECTL) apply -f deploy/operator/rbac
+	sed 's|$(OPERATOR_IMAGE):dev|$(OPERATOR_IMAGE):$(OPERATOR_TAG)|' deploy/operator/operator.yaml | $(KUBECTL) apply -f -
+	$(KUBECTL) -n spillway-system rollout status deployment/spillway-operator --timeout=3m
+
 .PHONY: vector-check
 vector-check: docker-check ## Validate and unit-test the Vector configs
 	docker run --rm -v $(CURDIR)/vector:/vector:ro $(VECTOR_IMAGE) \
@@ -174,8 +196,15 @@ baseline: $(KUBECTL) ## Print volume and latency over the last WINDOW (default 1
 		python3 bench/baseline.py --window $(or $(WINDOW),15m)
 
 .PHONY: test
-test: ## Run Go unit tests
-	go test -race ./...
+test: $(SETUP_ENVTEST) ## Run Go unit tests, including CRD validation against a local API server
+	KUBEBUILDER_ASSETS="$$($(SETUP_ENVTEST) use $(ENVTEST_K8S_VERSION) --bin-dir $(BIN)/envtest -p path)" \
+		go test -race ./...
+
+.PHONY: generate
+generate: $(CONTROLLER_GEN) ## Regenerate deepcopy code, the CRD and operator RBAC from the Go types
+	$(CONTROLLER_GEN) object paths=./api/...
+	$(CONTROLLER_GEN) crd rbac:roleName=spillway-operator paths=./api/... paths=./internal/... \
+		output:crd:artifacts:config=deploy/operator/crd output:rbac:artifacts:config=deploy/operator/rbac
 
 .PHONY: lint
 lint: $(GOLANGCI_LINT) ## Lint the Go code
@@ -198,7 +227,7 @@ docker-check:
 		exit 1; }
 
 .PHONY: tools
-tools: $(KIND) $(KUBECTL) $(HELM) $(GOLANGCI_LINT) ## Install pinned kind, kubectl, helm and golangci-lint into ./bin
+tools: $(KIND) $(KUBECTL) $(HELM) $(GOLANGCI_LINT) $(CONTROLLER_GEN) $(SETUP_ENVTEST) ## Install the pinned tools into ./bin
 
 $(KIND):
 	@mkdir -p $(BIN)
@@ -224,3 +253,15 @@ $(GOLANGCI_LINT):
 		| tar -xzO golangci-lint-$(GOLANGCI_LINT_VERSION:v%=%)-$(OS)-$(ARCH)/golangci-lint > $@
 	chmod +x $@
 	ln -sf $(notdir $@) $(BIN)/golangci-lint
+
+$(CONTROLLER_GEN):
+	@mkdir -p $(BIN)
+	GOBIN=$(BIN)/.gobin go install sigs.k8s.io/controller-tools/cmd/controller-gen@$(CONTROLLER_GEN_VERSION)
+	mv $(BIN)/.gobin/controller-gen $@
+	ln -sf $(notdir $@) $(BIN)/controller-gen
+
+$(SETUP_ENVTEST):
+	@mkdir -p $(BIN)
+	GOBIN=$(BIN)/.gobin go install sigs.k8s.io/controller-runtime/tools/setup-envtest@$(SETUP_ENVTEST_VERSION)
+	mv $(BIN)/.gobin/setup-envtest $@
+	ln -sf $(notdir $@) $(BIN)/setup-envtest

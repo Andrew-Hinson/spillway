@@ -1,0 +1,15 @@
+# Content: the Wikimedia edit stream from Kafka, rate-capped, kept hot and cold.
+apiVersion: spillway.dev/v1alpha1
+kind: LogPipeline
+metadata:
+  name: content
+spec:
+  team: content
+  sources:
+    - name: wikimedia
+      kafka:
+        topic: wikimedia.recentchange
+  budget:
+    maxEventsPerSec: 100
+  routing:
+    cold: true

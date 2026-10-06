@@ -14,7 +14,7 @@ concurrency:
 
 jobs:
   go:
-    name: Go lint and test
+    name: Go lint, generate and test
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -22,6 +22,13 @@ jobs:
         with:
           go-version-file: go.mod
       - run: make lint
+      # The CRD, RBAC and deepcopy code are generated from the Go types; fail
+      # if they weren't regenerated after a change.
+      - name: Check generated files are up to date
+        run: |
+          make generate
+          git status --porcelain
+          test -z "$(git status --porcelain)"
       - run: make test
 
   vector:

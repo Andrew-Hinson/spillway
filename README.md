@@ -4,7 +4,9 @@ Spillway is a Kubernetes log platform that will turn a short YAML spec per team 
 
 ## Status
 
-**M1 (real traffic, end to end) is built.** Live Wikimedia edits and the cluster's own pod logs flow through Kafka and Vector into Loki and can be queried in Grafana, and a baseline has been recorded. The operator, policy features, and benchmarks (M2–M4) are not started yet. See the [build plan](docs/plan.md).
+**M1 (real traffic, end to end) is built.** Live Wikimedia edits and the cluster's own pod logs flow through Kafka and Vector into Loki and can be queried in Grafana, and a baseline has been recorded.
+
+**M2 (the operator) is under way.** The `LogPipeline` CRD and a scaffolded operator are in place: the API server rejects malformed specs at apply time, and the operator watches LogPipelines but doesn't act on them yet. Rendering specs into Vector config, validating it and rolling it out come next. Policy features and benchmarks (M3–M4) haven't started. See the [build plan](docs/plan.md).
 
 ## Architecture
 
@@ -18,14 +20,15 @@ pod logs on every node ──► Vector agent (DaemonSet) ───────�
 - **Feeder** ([`feeders/wikimedia`](feeders/wikimedia)): reads the `recentchange` SSE stream, resumes from the last event ID after a disconnect, and stamps each event with a unique ID and a produce timestamp before writing it to Kafka.
 - **Aggregator** ([`vector/aggregator`](vector/aggregator)): consumes from Kafka and stamps each event with a pre-sink time, so feeder-to-sink latency can be measured. It writes to Loki through a 1 GiB disk buffer and commits Kafka offsets only once events are in that buffer.
 - **Agent** ([`vector/agent`](vector/agent)): runs on every node, tails pod logs, and forwards them to the aggregator. The aggregator writes them to Loki through a separate sink, labelled `namespace`, `pod` and `container`.
+- **Operator** ([`cmd/operator`](cmd/operator), [`api/v1alpha1`](api/v1alpha1)): watches `LogPipeline` resources, one per team. For now it only logs what it sees.
 - **Self-monitoring**: Prometheus scrapes the feeder and every Vector instance. The *Spillway pipeline* dashboard ([`dashboards/pipeline.json`](dashboards/pipeline.json)) shows throughput, latency, consumer lag, buffer size and errors.
 
 ## Quickstart
 
-You need Docker, `make` and `curl`. Go 1.27 is needed only for `make test`, and `python3` only for `make baseline`. The kind, kubectl, helm and golangci-lint versions the repo uses are downloaded into `./bin` automatically.
+You need Docker, `make` and `curl`. Go 1.27 is needed only for `make test`, and `python3` only for `make baseline`. The versions of kind, kubectl, helm and the Go tooling (golangci-lint, controller-gen, setup-envtest) that the repo uses are downloaded into `./bin` automatically.
 
 ```bash
-make up            # kind cluster + Kafka, Loki, Prometheus, Grafana + feeder, aggregator, agents (~5 min)
+make up            # kind cluster + Kafka, Loki, Prometheus, Grafana + feeder, aggregator, agents, operator (~5 min)
 make grafana-ui    # http://localhost:3000, prints the admin password
 make down          # delete the cluster; nothing is left behind
 ```
@@ -34,17 +37,50 @@ The cluster's kubeconfig is written to `./.kubeconfig`, so your `~/.kube/config`
 
 In Grafana's Explore view, try `{feeder="wikimedia"}` for edits or `{namespace="kafka"}` for pod logs.
 
+## LogPipeline
+
+Each team describes its pipeline in one resource. See [`examples/`](examples) for more.
+
+```yaml
+apiVersion: spillway.dev/v1alpha1
+kind: LogPipeline
+metadata:
+  name: payments
+spec:
+  team: payments
+  sources:
+    - name: services
+      kubernetes: {namespaces: [payments]}   # or kafka: {topic: ...}
+  redaction: {patterns: [ssn, email, phone, memberId]}
+  sampling: {keepPercent: {debug: 0, info: 25}}
+  budget: {maxEventsPerSec: 500}
+  routing: {hot: true, cold: true}
+```
+
+The schema is enforced by the API server, so `kubectl apply` rejects a malformed spec and reports every error at once:
+
+```
+The LogPipeline "broken" is invalid:
+* spec.sampling.keepPercent.info: Invalid value: 150: ... should be less than or equal to 100
+* spec.team: Invalid value: "Payments": ... should match '^[a-z0-9]([-a-z0-9]*[a-z0-9])?$'
+* spec.sources[0]: Invalid value: exactly one of kafka or kubernetes must be set
+* spec.routing: Invalid value: at least one of hot or cold must be enabled
+```
+
+Only the schema is enforced so far. The operator doesn't render specs into Vector config yet, so the policy fields have no effect until M2–M3.
+
 ## Development
 
 | Command | What it does |
 |---|---|
-| `make test` | Go unit tests, with the race detector |
+| `make test` | Go unit tests with the race detector, plus CRD validation tests against a real API server ([envtest](https://book.kubebuilder.io/reference/envtest)) |
+| `make generate` | Regenerate the CRD, RBAC and deepcopy code from the Go types. CI fails if they're out of date |
 | `make lint` | golangci-lint |
 | `make vector-check` | `vector validate` on both configs, plus the `vector test` unit tests in [`vector/tests`](vector/tests) |
 | `make baseline` | Volume and latency over the last 15 minutes, as Markdown |
 | `make help` | Every target |
 
-CI runs `lint`, `test` and `vector-check` on every PR.
+CI runs `lint`, `generate`, `test` and `vector-check` on every PR.
 
 ## Baseline (M1)
 
@@ -59,9 +95,13 @@ Latency is measured from the feeder handing an event to Kafka until the aggregat
 ## Layout
 
 ```
+api/v1alpha1/        LogPipeline API types (the CRD is generated from these)
+cmd/operator/        operator entrypoint and Dockerfile
+internal/controller/ LogPipeline reconciler
+examples/            example LogPipeline specs
 feeders/wikimedia/   Go SSE → Kafka feeder
 vector/              agent and aggregator configs, Helm values, unit tests
-deploy/              kind cluster, platform Helm values, feeder manifests
+deploy/              kind cluster, platform Helm values, feeder and operator manifests (generated CRD and RBAC)
 dashboards/          Grafana dashboards
 bench/               baseline measurement script
 docs/                build plan and results
