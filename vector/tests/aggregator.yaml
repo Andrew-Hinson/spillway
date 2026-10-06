@@ -38,3 +38,38 @@ tests:
             source: |
               assert!(is_timestamp(.spillway.sink_at))
               assert!(!exists(.spillway.pipeline_latency_ms))
+
+  - name: pod_logs keeps the message and pod identity, drops other metadata
+    inputs:
+      - insert_at: pod_logs
+        type: vrl
+        source: |
+          . = {
+            "message": "hello",
+            "stream": "stdout",
+            "file": "/var/log/pods/feeders_wikimedia-feeder-abc_123/feeder/0.log",
+            "source_type": "kubernetes_logs",
+            "kubernetes": {
+              "pod_namespace": "feeders",
+              "pod_name": "wikimedia-feeder-abc",
+              "container_name": "feeder",
+              "pod_node_name": "spillway-worker",
+              "pod_ip": "10.244.1.5",
+              "pod_uid": "123",
+              "pod_labels": {"app": "wikimedia-feeder"}
+            }
+          }
+    outputs:
+      - extract_from: pod_logs
+        conditions:
+          - type: vrl
+            source: |
+              assert_eq!(.message, "hello")
+              assert_eq!(.stream, "stdout")
+              assert_eq!(.namespace, "feeders")
+              assert_eq!(.pod, "wikimedia-feeder-abc")
+              assert_eq!(.container, "feeder")
+              assert_eq!(.node, "spillway-worker")
+              assert!(!exists(.kubernetes))
+              assert!(!exists(.file))
+              assert!(!exists(.source_type))
