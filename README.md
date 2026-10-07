@@ -6,7 +6,7 @@ Spillway is a Kubernetes log platform that will turn a short YAML spec per team 
 
 **M1 (real traffic, end to end) is built.** Live Wikimedia edits and the cluster's own pod logs flow through Kafka and Vector into Loki and can be queried in Grafana, and a baseline has been recorded.
 
-**M2 (the operator) is under way.** Applying a `LogPipeline` now changes what runs. The operator renders every pipeline into the aggregator's config, checks it with `vector validate`, rolls the aggregator, and marks each pipeline Ready, or Invalid with the reason. Malformed specs are rejected at apply time, and config Vector would reject never reaches the aggregator. `spillwayctl` runs the same checks without a cluster. Still to come in M2: VRL unit tests and canary rollouts. Policy features and benchmarks (M3–M4) haven't started. See the [build plan](docs/plan.md).
+**M2 (the operator) is under way.** Applying a `LogPipeline` now changes what runs. The operator renders every pipeline into the aggregator's config, checks it with `vector validate`, rolls the aggregator, and marks each pipeline Ready, or Invalid with the reason. Malformed specs are rejected at apply time, and config Vector would reject never reaches the aggregator. `spillwayctl` runs the same checks without a cluster, plus generated `vector test` unit tests. Still to come in M2: canary rollouts. Policy features and benchmarks (M3–M4) haven't started. See the [build plan](docs/plan.md).
 
 ## Architecture
 
@@ -83,6 +83,7 @@ payments    payments    False   Invalid     default/payments routes to cold stor
 1. Each spec is checked against the CRD schema, using the API server's own validation libraries, so you see the same errors `kubectl apply` would give.
 2. All specs are rendered together, which catches conflicts such as a team claimed twice.
 3. The rendered config goes through `vector validate`.
+4. The unit tests generated for that config run with `vector test`. The renderer writes tests for every transform it emits, with assertions on behaviour. For example: each PII pattern is masked in nested fields while Spillway's own metadata is kept; a 0% level is dropped; a claimed namespace leaves the platform path.
 
 ```bash
 make spillwayctl
@@ -106,7 +107,7 @@ Cold storage (MinIO) arrives in M3. Until then, pipelines that route to cold sto
 | `make test` | Go unit tests with the race detector, CRD and operator tests against a real API server ([envtest](https://book.kubebuilder.io/reference/envtest)), and `vector validate` on rendered config, including random schema-valid specs |
 | `make generate` | Regenerate the CRD, RBAC and deepcopy code from the Go types. CI fails if they're out of date |
 | `make lint` | golangci-lint |
-| `make vector-check` | `vector validate` on the agent and aggregator configs and on every rendered example, plus the `vector test` unit tests in [`vector/tests`](vector/tests) |
+| `make vector-check` | `vector validate` and the generated `vector test` suite on the aggregator config and every rendered example, plus `vector validate` on the agent config |
 | `make baseline` | Volume and latency over the last 15 minutes, as Markdown |
 | `make help` | Every target |
 

@@ -65,20 +65,22 @@ func TestExamplesMatchGoldenFiles(t *testing.T) {
 	var all []spillwayv1alpha1.LogPipeline
 	for name, lp := range examples {
 		t.Run(name, func(t *testing.T) {
-			got, err := Render([]spillwayv1alpha1.LogPipeline{lp}, DefaultOptions())
+			cfg, tests, err := RenderWithTests([]spillwayv1alpha1.LogPipeline{lp}, DefaultOptions())
 			if err != nil {
 				t.Fatal(err)
 			}
-			golden(t, name, got)
+			golden(t, name, cfg)
+			golden(t, name+".tests", tests)
 		})
 		all = append(all, lp)
 	}
 	t.Run("all-examples", func(t *testing.T) {
-		got, err := Render(all, DefaultOptions())
+		cfg, tests, err := RenderWithTests(all, DefaultOptions())
 		if err != nil {
 			t.Fatal(err)
 		}
-		golden(t, "all-examples", got)
+		golden(t, "all-examples", cfg)
+		golden(t, "all-examples.tests", tests)
 	})
 }
 
@@ -149,11 +151,64 @@ func TestConflictsAreRejected(t *testing.T) {
 // With no pipelines the renderer produces the M1 pipeline, which is also the
 // aggregator's bootstrap config before the operator takes over.
 func TestNoPipelinesRendersBootstrapConfig(t *testing.T) {
-	got, err := Render(nil, DefaultOptions())
+	cfg, tests, err := RenderWithTests(nil, DefaultOptions())
 	if err != nil {
 		t.Fatal(err)
 	}
-	goldenAt(t, filepath.Join("..", "..", "vector", "aggregator", "vector.yaml"), got)
+	goldenAt(t, filepath.Join("..", "..", "vector", "aggregator", "vector.yaml"), cfg)
+	goldenAt(t, filepath.Join("..", "..", "vector", "tests", "aggregator.yaml"), tests)
+}
+
+// Every transform in every golden config must have a generated test that
+// extracts from it (or asserts it emits nothing). `make vector-check` runs
+// the tests themselves.
+func TestEveryTransformHasATest(t *testing.T) {
+	pairs := map[string]string{
+		filepath.Join("..", "..", "vector", "aggregator", "vector.yaml"): filepath.Join("..", "..", "vector", "tests", "aggregator.yaml"),
+	}
+	configs, _ := filepath.Glob(filepath.Join("testdata", "*.yaml"))
+	for _, f := range configs {
+		if !strings.HasSuffix(f, ".tests.yaml") {
+			pairs[f] = strings.TrimSuffix(f, ".yaml") + ".tests.yaml"
+		}
+	}
+	if len(pairs) < 5 {
+		t.Fatalf("only %d config/test pairs found", len(pairs))
+	}
+	for cfgPath, testsPath := range pairs {
+		var cfg struct{ Transforms map[string]any }
+		var suite struct {
+			Tests []struct {
+				Outputs []struct {
+					ExtractFrom string `json:"extract_from"`
+				}
+				NoOutputsFrom []string `json:"no_outputs_from"`
+			}
+		}
+		for path, into := range map[string]any{cfgPath: &cfg, testsPath: &suite} {
+			b, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := yaml.Unmarshal(b, into); err != nil {
+				t.Fatalf("%s: %v", path, err)
+			}
+		}
+		covered := map[string]bool{}
+		for _, tc := range suite.Tests {
+			for _, o := range tc.Outputs {
+				covered[o.ExtractFrom] = true
+			}
+			for _, id := range tc.NoOutputsFrom {
+				covered[id] = true
+			}
+		}
+		for id := range cfg.Transforms {
+			if !covered[id] {
+				t.Errorf("%s: transform %q has no test in %s", filepath.Base(cfgPath), id, filepath.Base(testsPath))
+			}
+		}
+	}
 }
 
 func TestClaimedDataLeavesThePlatformPath(t *testing.T) {

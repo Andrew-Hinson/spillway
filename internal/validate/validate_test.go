@@ -112,3 +112,32 @@ func TestCachedDoesNotRememberRunFailures(t *testing.T) {
 		t.Errorf("a failure to run Vector was cached (calls = %d, want 2)", inner.calls)
 	}
 }
+
+func TestVectorRunsGeneratedTests(t *testing.T) {
+	v := Vector{Bin: vectorBin(t)}
+	read := func(name string) []byte {
+		b, err := os.ReadFile(filepath.Join("..", "render", "testdata", name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return b
+	}
+	cfg, tests := read("payments.yaml"), read("payments.tests.yaml")
+	if err := v.Test(context.Background(), cfg, tests); err != nil {
+		t.Fatalf("generated tests fail on the config they were generated for: %v", err)
+	}
+
+	// Sampling that keeps debug events must fail the test that says it drops them.
+	broken := strings.Replace(string(cfg), `"debug": 0`, `"debug": 100`, 1)
+	if broken == string(cfg) {
+		t.Fatal("mutation didn't apply")
+	}
+	err := v.Test(context.Background(), []byte(broken), tests)
+	var verdict *Error
+	if !errors.As(err, &verdict) {
+		t.Fatalf("got %v, want a failing test", err)
+	}
+	if !strings.Contains(verdict.Output, "payments_sample drops every debug event") || strings.Contains(verdict.Output, "... passed") {
+		t.Errorf("output should name the failing test and omit passing ones:\n%s", verdict.Output)
+	}
+}

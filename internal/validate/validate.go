@@ -100,6 +100,49 @@ func (v Vector) Validate(ctx context.Context, config []byte) error {
 	}
 }
 
+// Test runs `vector test` with the rendered config and its generated unit
+// tests (render.RenderWithTests). A failing test is reported as an *Error.
+func (v Vector) Test(ctx context.Context, config, tests []byte) error {
+	dir, err := os.MkdirTemp("", "spillway-test-*")
+	if err != nil {
+		return err
+	}
+	defer func() { _ = os.RemoveAll(dir) }()
+	cfgPath, testsPath := dir+"/config.yaml", dir+"/tests.yaml"
+	if err := os.WriteFile(cfgPath, config, 0o600); err != nil {
+		return err
+	}
+	if err := os.WriteFile(testsPath, tests, 0o600); err != nil {
+		return err
+	}
+	timeout := v.Timeout
+	if timeout == 0 {
+		timeout = 30 * time.Second
+	}
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	var out bytes.Buffer
+	cmd := exec.CommandContext(ctx, v.Bin, "test", cfgPath, testsPath)
+	cmd.Stdout, cmd.Stderr = &out, &out
+	err = cmd.Run()
+	var exit *exec.ExitError
+	switch {
+	case err == nil:
+		return nil
+	case errors.As(err, &exit) && ctx.Err() == nil:
+		// Keep the failures, not the list of passing tests.
+		var keep []string
+		for _, line := range strings.Split(ansi.ReplaceAllString(out.String(), ""), "\n") {
+			if !strings.HasSuffix(line, "... passed") && line != "Running tests" {
+				keep = append(keep, line)
+			}
+		}
+		return &Error{Output: summarize(strings.Join(keep, "\n"), dir)}
+	default:
+		return fmt.Errorf("running %s test: %w", v.Bin, err)
+	}
+}
+
 var ansi = regexp.MustCompile(`\x1b\[[0-9;]*m`)
 
 // summarize keeps Vector's error lines, without colour, progress lines or the
