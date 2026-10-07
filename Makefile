@@ -42,7 +42,8 @@ LOKI_CHART_VERSION    := 18.13.7
 GRAFANA_CHART_VERSION := 13.2.7
 PROMETHEUS_CHART_VERSION := 29.35.0
 VECTOR_CHART_VERSION  := 0.58.0
-VECTOR_IMAGE          := timberio/vector:0.58.0-distroless-libc
+VECTOR_VERSION        := 0.58.0
+VECTOR_IMAGE          := timberio/vector:$(VECTOR_VERSION)-distroless-libc
 GRAFANA_CHARTS        := https://grafana-community.github.io/helm-charts
 PLATFORM              := deploy/platform
 HELM_INSTALL           = $(HELM) upgrade --install --wait --timeout 10m
@@ -52,7 +53,7 @@ HELM_INSTALL           = $(HELM) upgrade --install --wait --timeout 10m
 WIKIMEDIA_IMAGE := spillway/wikimedia-feeder
 WIKIMEDIA_TAG    = $(shell cat go.mod go.sum $$(find feeders/wikimedia -type f | sort) | sha256sum | cut -c1-12)
 OPERATOR_IMAGE  := spillway/operator
-OPERATOR_TAG     = $(shell cat go.mod go.sum $$(find api cmd/operator internal -type f | sort) | sha256sum | cut -c1-12)
+OPERATOR_TAG     = $(shell (echo $(VECTOR_VERSION); cat go.mod go.sum $$(find api cmd/operator internal -type f | sort)) | sha256sum | cut -c1-12)
 # Must be one of the images built for KIND_VERSION, pinned by digest (see kind release notes).
 KIND_NODE_IMAGE := kindest/node:v1.37.0@sha256:a1ed56cfb0e7b93589bdf97c8cd566405a265939e3620fc4f5de89adff580ae5
 
@@ -63,6 +64,10 @@ HELM    := $(BIN)/helm-$(HELM_VERSION)
 GOLANGCI_LINT := $(BIN)/golangci-lint-$(GOLANGCI_LINT_VERSION)
 CONTROLLER_GEN := $(BIN)/controller-gen-$(CONTROLLER_GEN_VERSION)
 SETUP_ENVTEST  := $(BIN)/setup-envtest-$(SETUP_ENVTEST_VERSION)
+# Vector for the validation tests, the same version the aggregator and the
+# operator image run. Release builds: macOS on arm64, static Linux builds.
+VECTOR         := $(BIN)/vector-$(VECTOR_VERSION)
+VECTOR_TRIPLE   = $(if $(filter darwin,$(OS)),arm64-apple-darwin,$(if $(filter arm64,$(ARCH)),aarch64,x86_64)-unknown-linux-musl)
 
 OS   := $(shell uname -s | tr '[:upper:]' '[:lower:]')
 ARCH := $(shell uname -m | sed -e 's/x86_64/amd64/' -e 's/aarch64/arm64/')
@@ -172,7 +177,7 @@ agent: $(HELM) $(KUBECTL) ## Deploy the Vector agent DaemonSet (pod logs -> aggr
 
 .PHONY: operator
 operator: docker-check $(KIND) $(KUBECTL) ## Build, load and deploy the operator and the LogPipeline CRD
-	docker build -q -t $(OPERATOR_IMAGE):$(OPERATOR_TAG) -f cmd/operator/Dockerfile .
+	docker build -q -t $(OPERATOR_IMAGE):$(OPERATOR_TAG) --build-arg VECTOR_VERSION=$(VECTOR_VERSION) -f cmd/operator/Dockerfile .
 	$(KIND) load docker-image $(OPERATOR_IMAGE):$(OPERATOR_TAG) --name $(CLUSTER_NAME)
 	$(KUBECTL) apply --server-side -f deploy/operator/crd
 	$(KUBECTL) wait crd/logpipelines.spillway.dev --for=condition=Established --timeout=1m
@@ -203,9 +208,9 @@ baseline: $(KUBECTL) ## Print volume and latency over the last WINDOW (default 1
 		python3 bench/baseline.py --window $(or $(WINDOW),15m)
 
 .PHONY: test
-test: $(SETUP_ENVTEST) ## Run Go unit tests, including CRD validation against a local API server
+test: $(SETUP_ENVTEST) $(VECTOR) ## Run Go unit tests, including CRD validation against a local API server
 	KUBEBUILDER_ASSETS="$$($(SETUP_ENVTEST) use $(ENVTEST_K8S_VERSION) --bin-dir $(BIN)/envtest -p path)" \
-		go test -race ./...
+		VECTOR_BIN=$(VECTOR) go test -race ./...
 
 .PHONY: generate
 generate: $(CONTROLLER_GEN) ## Regenerate deepcopy code, the CRD and operator RBAC from the Go types
@@ -234,7 +239,7 @@ docker-check:
 		exit 1; }
 
 .PHONY: tools
-tools: $(KIND) $(KUBECTL) $(HELM) $(GOLANGCI_LINT) $(CONTROLLER_GEN) $(SETUP_ENVTEST) ## Install the pinned tools into ./bin
+tools: $(KIND) $(KUBECTL) $(HELM) $(GOLANGCI_LINT) $(CONTROLLER_GEN) $(SETUP_ENVTEST) $(VECTOR) ## Install the pinned tools into ./bin
 
 $(KIND):
 	@mkdir -p $(BIN)
@@ -272,3 +277,10 @@ $(SETUP_ENVTEST):
 	GOBIN=$(BIN)/.gobin go install sigs.k8s.io/controller-runtime/tools/setup-envtest@$(SETUP_ENVTEST_VERSION)
 	mv $(BIN)/.gobin/setup-envtest $@
 	ln -sf $(notdir $@) $(BIN)/setup-envtest
+
+$(VECTOR):
+	@mkdir -p $(BIN)
+	curl -fsSL https://packages.timber.io/vector/$(VECTOR_VERSION)/vector-$(VECTOR_VERSION)-$(VECTOR_TRIPLE).tar.gz \
+		| tar -xzO ./vector-$(VECTOR_TRIPLE)/bin/vector > $@
+	chmod +x $@
+	ln -sf $(notdir $@) $(BIN)/vector

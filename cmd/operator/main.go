@@ -5,6 +5,9 @@ package main
 import (
 	"flag"
 	"os"
+	"os/exec"
+	"strings"
+	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -20,6 +23,7 @@ import (
 	spillwayv1alpha1 "github.com/Andrew-Hinson/spillway/api/v1alpha1"
 	"github.com/Andrew-Hinson/spillway/internal/controller"
 	"github.com/Andrew-Hinson/spillway/internal/render"
+	"github.com/Andrew-Hinson/spillway/internal/validate"
 )
 
 func main() {
@@ -31,6 +35,9 @@ func main() {
 	// with a sink that would block once its buffer filled.
 	rec.Options.Cold = nil
 	var cold render.ColdStorage
+	var vector validate.Vector
+	flag.StringVar(&vector.Bin, "vector-bin", "/usr/local/bin/vector", "vector binary used to validate rendered config (same version as the aggregator)")
+	flag.DurationVar(&vector.Timeout, "validation-timeout", 30*time.Second, "how long `vector validate` may take")
 	flag.StringVar(&rec.Namespace, "aggregator-namespace", "vector", "namespace of the Vector aggregator")
 	flag.StringVar(&rec.StatefulSet, "aggregator-statefulset", "vector-aggregator", "the aggregator's StatefulSet")
 	flag.StringVar(&rec.ConfigMap, "aggregator-configmap", "vector-aggregator-config", "the ConfigMap the aggregator loads its config from")
@@ -49,6 +56,15 @@ func main() {
 	}
 	ctrl.SetLogger(zap.New(zap.UseFlagOptions(&opts)))
 	log := ctrl.Log.WithName("setup")
+
+	// Without Vector there is no validation gate, so don't run at all.
+	version, err := exec.Command(vector.Bin, "--version").Output()
+	if err != nil {
+		log.Error(err, "the vector binary is needed to validate rendered config", "path", vector.Bin)
+		os.Exit(1)
+	}
+	log.Info("validating rendered config with", "vector", strings.TrimSpace(string(version)))
+	rec.Validator = &validate.Cached{Validator: vector, Size: 64}
 
 	scheme := runtime.NewScheme()
 	if err := clientgoscheme.AddToScheme(scheme); err != nil {
