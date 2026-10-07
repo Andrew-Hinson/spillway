@@ -151,7 +151,9 @@ type LogPipelineStatus struct {
 	// Conditions: Ready is True once the aggregator runs config that includes
 	// this pipeline. When False, its reason says why: RollingOut while the
 	// aggregator restarts with new config, Invalid when the pipeline can't be
-	// rendered (for example, its team or a namespace is already claimed), or
+	// rendered (for example, its team or a namespace is already claimed) or
+	// Vector rejects its config, ValidationFailed when the combined config is
+	// rejected and the aggregator keeps its last valid config, or
 	// AggregatorNotFound.
 	// +listType=map
 	// +listMapKey=type
@@ -191,5 +193,6 @@ const (
 	ReasonRolledOut          = "RolledOut"
 	ReasonRollingOut         = "RollingOut"
 	ReasonInvalid            = "Invalid"
+	ReasonValidationFailed   = "ValidationFailed"
 	ReasonAggregatorNotFound = "AggregatorNotFound"
 )

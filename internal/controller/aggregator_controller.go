@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"sort"
 	"time"
@@ -25,6 +26,7 @@ import (
 
 	spillwayv1alpha1 "github.com/Andrew-Hinson/spillway/api/v1alpha1"
 	"github.com/Andrew-Hinson/spillway/internal/render"
+	"github.com/Andrew-Hinson/spillway/internal/validate"
 )
 
 const (
@@ -43,6 +45,8 @@ const (
 type AggregatorReconciler struct {
 	client.Client
 	Options render.Options
+	// Validator checks rendered config before it's applied.
+	Validator validate.Validator
 
 	// The aggregator: its namespace, StatefulSet and config ConfigMap.
 	Namespace   string
@@ -65,10 +69,17 @@ func (r *AggregatorReconciler) Reconcile(ctx context.Context, _ ctrl.Request) (c
 	}
 	accepted, invalid := r.partition(list.Items)
 
-	cfg, err := render.Render(accepted, r.Options)
-	if err != nil {
-		// partition already rendered this exact set successfully.
-		return ctrl.Result{}, fmt.Errorf("rendering accepted pipelines: %w", err)
+	cfg, accepted, err := r.validated(ctx, accepted, invalid)
+	var rejected *validate.Error
+	if errors.As(err, &rejected) {
+		// Not even the pipelines that pass alone combine into a config Vector
+		// accepts. Apply nothing: the aggregator keeps its last valid config.
+		logger.Info("rendered config failed validation; keeping the current config", "output", rejected.Output)
+		r.setStatuses(ctx, list.Items, invalid, metav1.ConditionFalse, spillwayv1alpha1.ReasonValidationFailed,
+			"the combined config failed validation, so the aggregator keeps its last valid config: "+rejected.Error())
+		return ctrl.Result{}, nil
+	} else if err != nil {
+		return ctrl.Result{}, err
 	}
 	sum := sha256.Sum256(cfg)
 	hash := hex.EncodeToString(sum[:])[:16]
@@ -107,6 +118,50 @@ func (r *AggregatorReconciler) Reconcile(ctx context.Context, _ ctrl.Request) (c
 	r.setStatuses(ctx, list.Items, invalid, metav1.ConditionTrue, spillwayv1alpha1.ReasonRolledOut,
 		"the aggregator is running config that includes this pipeline")
 	return ctrl.Result{}, nil
+}
+
+// validated renders accepted and checks the config with Vector. If Vector
+// rejects it, each pipeline is checked on its own: those Vector rejects alone
+// are moved to invalid, and the rest are rendered and checked again. It
+// returns the config to apply and the pipelines in it, or a *validate.Error
+// if the remaining pipelines still don't validate together.
+func (r *AggregatorReconciler) validated(ctx context.Context, accepted []spillwayv1alpha1.LogPipeline,
+	invalid map[types.UID]string) ([]byte, []spillwayv1alpha1.LogPipeline, error) {
+	cfg, err := render.Render(accepted, r.Options)
+	if err != nil {
+		// partition already rendered this exact set successfully.
+		return nil, nil, fmt.Errorf("rendering accepted pipelines: %w", err)
+	}
+	err = r.Validator.Validate(ctx, cfg)
+	var rejected *validate.Error
+	if !errors.As(err, &rejected) {
+		return cfg, accepted, err
+	}
+
+	var keep []spillwayv1alpha1.LogPipeline
+	for _, p := range accepted {
+		solo, err := render.Render([]spillwayv1alpha1.LogPipeline{p}, r.Options)
+		if err != nil {
+			return nil, nil, err
+		}
+		err = r.Validator.Validate(ctx, solo)
+		var bad *validate.Error
+		switch {
+		case errors.As(err, &bad):
+			invalid[p.UID] = "rendered config rejected by " + bad.Error()
+		case err != nil:
+			return nil, nil, err
+		default:
+			keep = append(keep, p)
+		}
+	}
+	if len(keep) == len(accepted) {
+		return nil, nil, rejected
+	}
+	if cfg, err = render.Render(keep, r.Options); err != nil {
+		return nil, nil, err
+	}
+	return cfg, keep, r.Validator.Validate(ctx, cfg)
 }
 
 // partition splits pipelines into those that render and those that don't.

@@ -6,7 +6,7 @@ Spillway is a Kubernetes log platform that will turn a short YAML spec per team 
 
 **M1 (real traffic, end to end) is built.** Live Wikimedia edits and the cluster's own pod logs flow through Kafka and Vector into Loki and can be queried in Grafana, and a baseline has been recorded.
 
-**M2 (the operator) is under way.** Applying a `LogPipeline` now changes what runs. The operator renders every pipeline into the aggregator's config, rolls the aggregator, and marks each pipeline Ready, or Invalid with the reason. Malformed specs are rejected at apply time. Still to come in M2: running `vector validate` before rollout, a CLI, VRL unit tests, and canary rollouts. Policy features and benchmarks (M3–M4) haven't started. See the [build plan](docs/plan.md).
+**M2 (the operator) is under way.** Applying a `LogPipeline` now changes what runs. The operator renders every pipeline into the aggregator's config, checks it with `vector validate`, rolls the aggregator, and marks each pipeline Ready, or Invalid with the reason. Malformed specs are rejected at apply time, and config Vector would reject never reaches the aggregator. Still to come in M2: a CLI, VRL unit tests, and canary rollouts. Policy features and benchmarks (M3–M4) haven't started. See the [build plan](docs/plan.md).
 
 ## Architecture
 
@@ -20,7 +20,7 @@ pod logs on every node ──► Vector agent (DaemonSet) ───────�
 - **Feeder** ([`feeders/wikimedia`](feeders/wikimedia)): reads the `recentchange` SSE stream, resumes from the last event ID after a disconnect, and stamps each event with a unique ID and a produce timestamp before writing it to Kafka.
 - **Aggregator** ([`vector/aggregator`](vector/aggregator)): consumes from Kafka and stamps each event with a pre-sink time, so feeder-to-sink latency can be measured. It writes to Loki through a 1 GiB disk buffer and commits Kafka offsets only once events are in that buffer.
 - **Agent** ([`vector/agent`](vector/agent)): runs on every node, tails pod logs, and forwards them to the aggregator. The aggregator writes them to Loki through a separate sink, labelled `namespace`, `pod` and `container`.
-- **Operator** ([`cmd/operator`](cmd/operator), [`internal/controller`](internal/controller)): watches `LogPipeline` resources, one per team. On every change it renders all of them into the aggregator's ConfigMap. It then rolls the aggregator via a config-hash annotation on its pod template and sets each pipeline's Ready condition. If two pipelines conflict, the older one keeps the team or namespace and the newer one is marked Invalid. Manual edits to the ConfigMap are reverted.
+- **Operator** ([`cmd/operator`](cmd/operator), [`internal/controller`](internal/controller)): watches `LogPipeline` resources, one per team. On every change it renders all of them, validates the result with the Vector binary bundled in its image, and writes it to the aggregator's ConfigMap ([ADR 0001](docs/adr/0001-validate-in-the-operator-image.md)). It then rolls the aggregator via a config-hash annotation on its pod template and sets each pipeline's Ready condition. A pipeline Vector rejects is marked Invalid with Vector's error. If the pipelines only fail together, nothing is applied and the aggregator keeps its last valid config. If two pipelines conflict, the older one keeps the team or namespace and the newer one is marked Invalid. Manual edits to the ConfigMap are reverted.
 - **Renderer** ([`internal/render`](internal/render)): turns LogPipelines into one aggregator config. Each team's events are tagged and redacted, then split. Cold storage gets the complete redacted stream. The hot path is sampled and rate-capped before Loki. Sinks are shared, so adding a team doesn't add disk buffers. Data no team claims takes the platform defaults, which are the M1 paths above. A topic or namespace a team claims leaves those paths, so the team's redaction can't be bypassed. With no LogPipelines the render is exactly the M1 pipeline, and [`vector/aggregator/vector.yaml`](vector/aggregator/vector.yaml) is generated from it. The rendered config for each example is checked in under [`internal/render/testdata`](internal/render/testdata) and validated by Vector in CI.
 - **Self-monitoring**: Prometheus scrapes the feeder and every Vector instance. The *Spillway pipeline* dashboard ([`dashboards/pipeline.json`](dashboards/pipeline.json)) shows throughput, latency, consumer lag, buffer size and errors.
 
@@ -83,7 +83,7 @@ Cold storage (MinIO) arrives in M3. Until then, pipelines that route to cold sto
 
 | Command | What it does |
 |---|---|
-| `make test` | Go unit tests with the race detector, plus CRD validation tests against a real API server ([envtest](https://book.kubebuilder.io/reference/envtest)) |
+| `make test` | Go unit tests with the race detector, CRD and operator tests against a real API server ([envtest](https://book.kubebuilder.io/reference/envtest)), and `vector validate` on rendered config, including random schema-valid specs |
 | `make generate` | Regenerate the CRD, RBAC and deepcopy code from the Go types. CI fails if they're out of date |
 | `make lint` | golangci-lint |
 | `make vector-check` | `vector validate` on the agent and aggregator configs and on every rendered example, plus the `vector test` unit tests in [`vector/tests`](vector/tests) |
@@ -110,11 +110,12 @@ cmd/operator/        operator entrypoint and Dockerfile
 internal/controller/ LogPipeline reconciler
 internal/render/     LogPipeline → Vector config, with golden files
 internal/redact/     PII patterns as VRL redact() filters
+internal/validate/   vector validate gate for rendered config
 examples/            example LogPipeline specs
 feeders/wikimedia/   Go SSE → Kafka feeder
 vector/              agent and aggregator configs, Helm values, unit tests
 deploy/              kind cluster, platform Helm values, feeder and operator manifests (generated CRD and RBAC)
 dashboards/          Grafana dashboards
 bench/               baseline measurement script
-docs/                build plan and results
+docs/                build plan, results and ADRs
 ```

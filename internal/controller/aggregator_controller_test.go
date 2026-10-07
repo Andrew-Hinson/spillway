@@ -26,6 +26,7 @@ import (
 
 	spillwayv1alpha1 "github.com/Andrew-Hinson/spillway/api/v1alpha1"
 	"github.com/Andrew-Hinson/spillway/internal/render"
+	"github.com/Andrew-Hinson/spillway/internal/validate"
 )
 
 var k8s client.Client
@@ -71,6 +72,29 @@ type env struct {
 	t   *testing.T
 	ctx context.Context
 	r   *AggregatorReconciler
+	v   *fakeVector
+}
+
+// fakeVector stands in for `vector validate`: it rejects any config that
+// contains all of the strings in one of its rules. (internal/validate tests
+// the real binary.)
+type fakeVector struct {
+	rejectIfAll [][]string
+	calls       int
+}
+
+func (f *fakeVector) Validate(_ context.Context, cfg []byte) error {
+	f.calls++
+	for _, rule := range f.rejectIfAll {
+		all := true
+		for _, s := range rule {
+			all = all && strings.Contains(string(cfg), s)
+		}
+		if all {
+			return &validate.Error{Output: fmt.Sprintf("rejected: config contains %q", rule)}
+		}
+	}
+	return nil
 }
 
 func newEnv(t *testing.T, createStatefulSet bool) *env {
@@ -83,8 +107,10 @@ func newEnv(t *testing.T, createStatefulSet bool) *env {
 	must(t, k8s.Create(ctx, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: ns}}))
 	opts := render.DefaultOptions()
 	opts.Cold = nil // as the operator runs until cold storage is configured
-	e := &env{t: t, ctx: ctx, r: &AggregatorReconciler{
-		Client: k8s, Options: opts, Namespace: ns, StatefulSet: "vector-aggregator", ConfigMap: "vector-aggregator-config",
+	v := &fakeVector{}
+	e := &env{t: t, ctx: ctx, v: v, r: &AggregatorReconciler{
+		Client: k8s, Options: opts, Validator: v,
+		Namespace: ns, StatefulSet: "vector-aggregator", ConfigMap: "vector-aggregator-config",
 	}}
 	if createStatefulSet {
 		labels := map[string]string{"app": "vector-aggregator"}
@@ -273,4 +299,63 @@ func TestMissingAggregatorIsReported(t *testing.T) {
 	e.pipeline("search", "search", "search", false)
 	e.reconcile()
 	e.expectReady("search", metav1.ConditionFalse, spillwayv1alpha1.ReasonAggregatorNotFound, "not found")
+}
+
+func TestPipelineVectorRejectsIsInvalidAndOthersRollOut(t *testing.T) {
+	e := newEnv(t, true)
+	e.v.rejectIfAll = [][]string{{"poison_hot"}}
+	e.pipeline("good", "good", "good", false)
+	e.pipeline("poison", "poison", "poison", false)
+
+	e.reconcile()
+	e.expectReady("poison", metav1.ConditionFalse, spillwayv1alpha1.ReasonInvalid, `rendered config rejected by vector validate: rejected: config contains ["poison_hot"]`)
+	e.expectReady("good", metav1.ConditionFalse, spillwayv1alpha1.ReasonRollingOut, "")
+	cfg := e.config()
+	if strings.Contains(cfg, "poison") {
+		t.Error("a pipeline Vector rejects reached the aggregator config")
+	}
+	if !strings.Contains(cfg, "good_hot") {
+		t.Error("the valid pipeline is missing from the config")
+	}
+	e.finishRollout()
+	e.reconcile()
+	e.expectReady("good", metav1.ConditionTrue, spillwayv1alpha1.ReasonRolledOut, "")
+}
+
+func TestConfigThatFailsOnlyCombinedIsNotApplied(t *testing.T) {
+	e := newEnv(t, true)
+	e.pipeline("alpha", "alpha", "alpha", false)
+	e.reconcile()
+	e.finishRollout()
+	e.reconcile()
+	before, hash := e.config(), e.hash()
+
+	// Each pipeline validates alone, but not together.
+	e.v.rejectIfAll = [][]string{{"alpha_hot", "beta_hot"}}
+	e.pipeline("beta", "beta", "beta", false)
+	e.reconcile()
+
+	if e.config() != before || e.hash() != hash {
+		t.Fatal("a config that failed validation was applied")
+	}
+	for _, name := range []string{"alpha", "beta"} {
+		e.expectReady(name, metav1.ConditionFalse, spillwayv1alpha1.ReasonValidationFailed, "keeps its last valid config")
+	}
+
+	// Once the conflict is gone, the new config validates and rolls out.
+	must(t, k8s.Delete(e.ctx, &spillwayv1alpha1.LogPipeline{ObjectMeta: metav1.ObjectMeta{Namespace: e.r.Namespace, Name: "alpha"}}))
+	e.reconcile()
+	e.expectReady("beta", metav1.ConditionFalse, spillwayv1alpha1.ReasonRollingOut, "")
+}
+
+func TestUnchangedConfigIsValidatedOnce(t *testing.T) {
+	e := newEnv(t, true)
+	e.r.Validator = &validate.Cached{Validator: e.v, Size: 8}
+	e.pipeline("search", "search", "search", false)
+	for range 5 {
+		e.reconcile()
+	}
+	if e.v.calls != 1 {
+		t.Errorf("validated an unchanged config %d times, want 1", e.v.calls)
+	}
 }
