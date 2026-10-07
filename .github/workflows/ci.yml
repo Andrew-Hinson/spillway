@@ -21,6 +21,24 @@ jobs:
       - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
+      # Pinned tools and envtest's API server binaries in ./bin, keyed on the
+      # tool versions in the Makefile.
+      - name: Hash tool versions
+        id: tools
+        run: echo "hash=$(grep -E '^[A-Z0-9_]+_VERSION +:=' Makefile | sha256sum | cut -c1-16)" >> "$GITHUB_OUTPUT"
+      - uses: actions/cache@v6
+        with:
+          path: bin
+          key: tools-${{ runner.os }}-${{ steps.tools.outputs.hash }}
+      # golangci-lint's analysis cache; restored from the latest run so only
+      # changed packages are re-analysed.
+      - uses: actions/cache@v6
+        with:
+          path: ~/.cache/golangci-lint
+          key: golangci-lint-${{ runner.os }}-${{ hashFiles('go.sum') }}-${{ github.sha }}
+          restore-keys: |
+            golangci-lint-${{ runner.os }}-${{ hashFiles('go.sum') }}-
+            golangci-lint-${{ runner.os }}-
       - run: make lint
       # The CRD, RBAC and deepcopy code are generated from the Go types; fail
       # if they weren't regenerated after a change.
