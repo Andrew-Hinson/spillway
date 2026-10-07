@@ -148,8 +148,11 @@ type LogPipelineStatus struct {
 	// +optional
 	ObservedGeneration int64 `json:"observedGeneration,omitempty"`
 
-	// Conditions: Ready once the rendered config is running, or Invalid when
-	// the config can't be rendered or fails validation.
+	// Conditions: Ready is True once the aggregator runs config that includes
+	// this pipeline. When False, its reason says why: RollingOut while the
+	// aggregator restarts with new config, Invalid when the pipeline can't be
+	// rendered (for example, its team or a namespace is already claimed), or
+	// AggregatorNotFound.
 	// +listType=map
 	// +listMapKey=type
 	// +optional
@@ -162,6 +165,8 @@ type LogPipelineStatus struct {
 // +kubebuilder:resource:shortName=lp
 // +kubebuilder:printcolumn:name="Team",type=string,JSONPath=`.spec.team`
 // +kubebuilder:printcolumn:name="Ready",type=string,JSONPath=`.status.conditions[?(@.type=="Ready")].status`
+// +kubebuilder:printcolumn:name="Reason",type=string,JSONPath=`.status.conditions[?(@.type=="Ready")].reason`
+// +kubebuilder:printcolumn:name="Message",type=string,priority=1,JSONPath=`.status.conditions[?(@.type=="Ready")].message`
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
 type LogPipeline struct {
 	metav1.TypeMeta   `json:",inline"`
@@ -178,3 +183,13 @@ type LogPipelineList struct {
 	metav1.ListMeta `json:"metadata,omitempty"`
 	Items           []LogPipeline `json:"items"`
 }
+
+// The condition type and reasons the operator sets.
+const (
+	ConditionReady = "Ready"
+
+	ReasonRolledOut          = "RolledOut"
+	ReasonRollingOut         = "RollingOut"
+	ReasonInvalid            = "Invalid"
+	ReasonAggregatorNotFound = "AggregatorNotFound"
+)

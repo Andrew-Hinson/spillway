@@ -23,6 +23,13 @@ spec:
     - jsonPath: .status.conditions[?(@.type=="Ready")].status
       name: Ready
       type: string
+    - jsonPath: .status.conditions[?(@.type=="Ready")].reason
+      name: Reason
+      type: string
+    - jsonPath: .status.conditions[?(@.type=="Ready")].message
+      name: Message
+      priority: 1
+      type: string
     - jsonPath: .metadata.creationTimestamp
       name: Age
       type: date
@@ -204,8 +211,11 @@ spec:
             properties:
               conditions:
                 description: |-
-                  Conditions: Ready once the rendered config is running, or Invalid when
-                  the config can't be rendered or fails validation.
+                  Conditions: Ready is True once the aggregator runs config that includes
+                  this pipeline. When False, its reason says why: RollingOut while the
+                  aggregator restarts with new config, Invalid when the pipeline can't be
+                  rendered (for example, its team or a namespace is already claimed), or
+                  AggregatorNotFound.
                 items:
                   description: Condition contains details for one aspect of the current
                     state of this API Resource.

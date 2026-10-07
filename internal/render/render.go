@@ -15,6 +15,14 @@
 // path. Dropped events show up in Vector's component_discarded_events_total
 // under the team's own component IDs. Sinks are shared by all teams, so the
 // number of disk buffers doesn't grow with the number of teams.
+//
+// Data no team claims takes the platform defaults, which are the M1 pipeline:
+// the feeder topic goes straight to Loki (wikimedia -> stamp -> loki) and pod
+// logs go to Loki labelled by namespace, pod and container (agents ->
+// pod_logs -> loki_pods). A claimed topic or namespace leaves the default
+// path, so a team's redaction can't be bypassed. With no pipelines, Render
+// returns exactly the M1 config: vector/aggregator/vector.yaml is generated
+// from it.
 package render
 
 import (
@@ -38,6 +46,17 @@ type Options struct {
 	AgentsAddress string
 	// Cold is required if any pipeline routes to cold storage.
 	Cold *ColdStorage
+	// Platform is what flows when no team claims it.
+	Platform Platform
+}
+
+// Platform configures the default paths for unclaimed data.
+type Platform struct {
+	// FeederTopic is read with the M1 consumer group and sent to Loki
+	// unchanged, unless a team reads it. Empty disables the path.
+	FeederTopic string
+	// PodLogs sends pod logs from namespaces no team claims to Loki.
+	PodLogs bool
 }
 
 // ColdStorage is an S3-compatible bucket (MinIO locally, S3 in the cloud).
@@ -58,6 +77,7 @@ func DefaultOptions() Options {
 			Bucket:   "spillway-cold",
 			Region:   "us-east-1",
 		},
+		Platform: Platform{FeederTopic: "wikimedia.recentchange", PodLogs: true},
 	}
 }
 
@@ -89,9 +109,12 @@ func Render(pipelines []spillwayv1alpha1.LogPipeline, opts Options) ([]byte, err
 		cold = append(cold, cl...)
 	}
 	metrics := []string{"internal_metrics"}
+	if c.addPlatform(pipelines, opts) {
+		metrics = append(metrics, "latency_metrics")
+	}
 	if len(hot) > 0 {
 		c.addHotSink(hot, opts)
-		metrics = append(metrics, "latency_metrics")
+		metrics = append(metrics, "team_latency_metrics")
 	}
 	if len(cold) > 0 {
 		c.addColdSink(cold, opts)
@@ -106,8 +129,12 @@ func Render(pipelines []spillwayv1alpha1.LogPipeline, opts Options) ([]byte, err
 
 	out, err := yaml.Marshal(map[string]any{
 		"data_dir": "/vector-data-dir",
-		// See vector/aggregator/vector.yaml: upstream events have their own
-		// "timestamp", so Vector's goes under a reserved name.
+		// Vector keeps each event's timestamp in a body field, "timestamp" by
+		// default. Upstream events have their own "timestamp" (Wikimedia's is
+		// Unix seconds), so Vector's goes under a reserved name: sources fill
+		// it in and the Loki sinks use it as the entry time. (Log namespacing
+		// would avoid the clash too, but in Vector 0.58 its timestamp is lost
+		// in a disk buffer and Loki falls back to arrival time.)
 		"log_schema": map[string]any{"timestamp_key": "_timestamp"},
 		"api":        map[string]any{"enabled": true, "address": "0.0.0.0:8686"},
 		"sources":    c.sources,
@@ -162,23 +189,15 @@ func (c *config) addPipeline(p spillwayv1alpha1.LogPipeline, opts Options) (hotO
 	for _, s := range p.Spec.Sources {
 		src, in := id("src_"+s.Name), id("in_"+s.Name)
 		tag := fmt.Sprintf(".spillway.team = %q\n.spillway.source = %q\n", team, s.Name)
+		// A rebuilt pod log has no .spillway yet, so it's set whole.
+		podTag := fmt.Sprintf(".spillway = {\"team\": %q, \"source\": %q}\n", team, s.Name)
 		switch {
 		case s.Kafka != nil:
-			c.sources[src] = map[string]any{
-				"type":              "kafka",
-				"bootstrap_servers": opts.KafkaBootstrap,
-				// One consumer group per team and source, so teams reading the
-				// same topic don't share (or steal) each other's offsets.
-				"group_id": fmt.Sprintf("spillway-%s-%s", team, s.Name),
-				"topics":   []string{s.Kafka.Topic},
-				// A new team starts at the head of the topic rather than
-				// replaying its whole retention; restarts use committed offsets.
-				"auto_offset_reset": "latest",
-				"decoding":          map[string]any{"codec": "json"},
-				// Keep Kafka metadata out of the event body.
-				"key_field": "", "topic_key": "", "partition_key": "", "offset_key": "", "headers_key": "",
-				"metrics": map[string]any{"topic_lag_metric": true},
-			}
+			// One consumer group per team and source, so teams reading the same
+			// topic don't share (or steal) each other's offsets. A new team
+			// starts at the head of the topic rather than replaying its whole
+			// retention; restarts use committed offsets.
+			c.sources[src] = kafkaSource(opts, fmt.Sprintf("spillway-%s-%s", team, s.Name), s.Kafka.Topic, "latest")
 			c.transforms[in] = remap([]string{src}, "del(.source_type)\n"+tag)
 		case s.Kubernetes != nil:
 			c.addAgentsSource(opts)
@@ -187,7 +206,7 @@ func (c *config) addPipeline(p spillwayv1alpha1.LogPipeline, opts Options) (hotO
 				"inputs":    []string{"agents"},
 				"condition": fmt.Sprintf("includes(%s, .kubernetes.pod_namespace)", vrlStrings(s.Kubernetes.Namespaces)),
 			}
-			c.transforms[in] = remap([]string{src}, podLogVRL+tag)
+			c.transforms[in] = remap([]string{src}, podLogVRL+podTag)
 		default:
 			return nil, nil, fmt.Errorf("source %q has no type", s.Name)
 		}
@@ -258,21 +277,122 @@ func (c *config) addHotSink(inputs []string, opts Options) {
 	}
 	// Feeder-to-sink latency as a histogram. Only events with a produce
 	// timestamp (feeder events) have a latency to record.
-	c.transforms["latency_events"] = map[string]any{
+	c.transforms["team_latency_events"] = map[string]any{
 		"type":      "filter",
 		"inputs":    inputs,
 		"condition": "exists(.spillway.pipeline_latency_ms)",
 	}
+	c.transforms["team_latency_metrics"] = map[string]any{
+		"type":    "log_to_metric",
+		"inputs":  []string{"team_latency_events"},
+		"metrics": []any{latencyHistogram(map[string]any{"team": "{{ spillway.team }}"})},
+	}
+}
+
+func latencyHistogram(tags map[string]any) map[string]any {
+	return map[string]any{
+		"type":      "histogram",
+		"field":     "spillway.pipeline_latency_ms",
+		"namespace": "spillway",
+		"name":      "pipeline_latency_milliseconds",
+		"tags":      tags,
+	}
+}
+
+// addPlatform adds the default paths for data no team claims, and reports
+// whether the feeder path (and so its latency metric) was added.
+func (c *config) addPlatform(pipelines []spillwayv1alpha1.LogPipeline, opts Options) bool {
+	var claimedNS []string
+	topicClaimed := false
+	for _, p := range pipelines {
+		for _, s := range p.Spec.Sources {
+			if s.Kubernetes != nil {
+				claimedNS = append(claimedNS, s.Kubernetes.Namespaces...)
+			}
+			if s.Kafka != nil && s.Kafka.Topic == opts.Platform.FeederTopic {
+				topicClaimed = true
+			}
+		}
+	}
+
+	if opts.Platform.PodLogs {
+		c.addAgentsSource(opts)
+		input := "agents"
+		if len(claimedNS) > 0 {
+			sort.Strings(claimedNS)
+			c.transforms["unclaimed_pods"] = map[string]any{
+				"type":      "filter",
+				"inputs":    []string{"agents"},
+				"condition": fmt.Sprintf("!includes(%s, .kubernetes.pod_namespace)", vrlStrings(claimedNS)),
+			}
+			input = "unclaimed_pods"
+		}
+		c.transforms["pod_logs"] = remap([]string{input}, podLogVRL)
+		c.sinks["loki_pods"] = map[string]any{
+			"type":     "loki",
+			"inputs":   []string{"pod_logs"},
+			"endpoint": opts.LokiEndpoint,
+			"encoding": map[string]any{"codec": "json"},
+			// Pod names change on every rollout, but a local cluster runs few
+			// enough pods that the stream count stays small.
+			"labels": map[string]any{
+				"namespace": "{{ namespace }}",
+				"pod":       "{{ pod }}",
+				"container": "{{ container }}",
+			},
+			"remove_label_fields": true,
+			"out_of_order_action": "accept",
+			"batch":               map[string]any{"timeout_secs": 1},
+			"buffer":              diskBuffer(512 << 20),
+			// Answer an agent's batch only once it's in this buffer.
+			"acknowledgements": map[string]any{"enabled": true},
+		}
+	}
+
+	if opts.Platform.FeederTopic == "" || topicClaimed {
+		return false
+	}
+	c.sources["wikimedia"] = kafkaSource(opts, "spillway-aggregator", opts.Platform.FeederTopic,
+		// The M1 consumer group predates teams and started from the oldest
+		// retained event; it now resumes from its committed offsets.
+		"earliest")
+	c.transforms["stamp"] = remap([]string{"wikimedia"}, "del(.source_type)\n"+stampVRL)
 	c.transforms["latency_metrics"] = map[string]any{
-		"type":   "log_to_metric",
-		"inputs": []string{"latency_events"},
-		"metrics": []any{map[string]any{
-			"type":      "histogram",
-			"field":     "spillway.pipeline_latency_ms",
-			"namespace": "spillway",
-			"name":      "pipeline_latency_milliseconds",
-			"tags":      map[string]any{"team": "{{ spillway.team }}"},
-		}},
+		"type":    "log_to_metric",
+		"inputs":  []string{"stamp"},
+		"metrics": []any{latencyHistogram(map[string]any{"feeder": "{{ spillway.feeder }}"})},
+	}
+	c.sinks["loki"] = map[string]any{
+		"type":     "loki",
+		"inputs":   []string{"stamp"},
+		"endpoint": opts.LokiEndpoint,
+		"encoding": map[string]any{"codec": "json"},
+		// Low-cardinality labels; wiki, title, user and so on stay in the line.
+		"labels": map[string]any{
+			"feeder": "{{ spillway.feeder }}",
+			"type":   "{{ type }}",
+		},
+		"out_of_order_action": "accept",
+		"batch":               map[string]any{"timeout_secs": 1},
+		"buffer":              diskBuffer(1 << 30),
+		// Commit Kafka offsets only once events are safely in the disk buffer.
+		"acknowledgements": map[string]any{"enabled": true},
+	}
+	return true
+}
+
+func kafkaSource(opts Options, group, topic, offsetReset string) map[string]any {
+	return map[string]any{
+		"type":              "kafka",
+		"bootstrap_servers": opts.KafkaBootstrap,
+		"group_id":          group,
+		"topics":            []string{topic},
+		"auto_offset_reset": offsetReset,
+		"decoding":          map[string]any{"codec": "json"},
+		// Keep Kafka metadata out of the event body: it would overwrite
+		// upstream fields with the same names and inflate every stored line.
+		"key_field": "", "topic_key": "", "partition_key": "", "offset_key": "", "headers_key": "",
+		"metrics": map[string]any{"topic_lag_metric": true},
 	}
 }
 
@@ -340,8 +460,7 @@ const podLogVRL = `k = object(.kubernetes) ?? {}
   "node": k.pod_node_name,
   "namespace": k.pod_namespace,
   "pod": k.pod_name,
-  "container": k.container_name,
-  "spillway": {}
+  "container": k.container_name
 }
 `
 
