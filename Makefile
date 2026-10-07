@@ -10,6 +10,7 @@
 #   make test        run Go unit tests, CRD validation against a local API server
 #                    (needs Go on the host)
 #   make generate    regenerate deepcopy code, the CRD and operator RBAC
+#   make spillwayctl build the CLI that validates and renders specs offline
 #   make lint        lint the Go code (pinned golangci-lint in ./bin)
 #   make vector-check validate and unit-test the Vector config (in Docker)
 #   make baseline    measure volume and latency over the last 15m (needs python3)
@@ -211,6 +212,11 @@ baseline: $(KUBECTL) ## Print volume and latency over the last WINDOW (default 1
 test: $(SETUP_ENVTEST) $(VECTOR) ## Run Go unit tests, including CRD validation against a local API server
 	KUBEBUILDER_ASSETS="$$($(SETUP_ENVTEST) use $(ENVTEST_K8S_VERSION) --bin-dir $(BIN)/envtest -p path)" \
 		VECTOR_BIN=$(VECTOR) go test -race ./...
+
+.PHONY: spillwayctl
+spillwayctl: $(VECTOR) ## Build the spillwayctl CLI into ./bin (validate and render specs without a cluster)
+	go build -o $(BIN)/spillwayctl ./cmd/spillwayctl
+	@echo "$(BIN)/spillwayctl validate --vector-bin $(VECTOR) examples/"
 
 .PHONY: generate
 generate: $(CONTROLLER_GEN) ## Regenerate deepcopy code, the CRD and operator RBAC from the Go types

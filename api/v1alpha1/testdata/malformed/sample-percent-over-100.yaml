@@ -1,0 +1,11 @@
+# want: should be less than or equal to 100
+apiVersion: spillway.dev/v1alpha1
+kind: LogPipeline
+metadata:
+  name: sample-percent-over-100
+spec:
+  team: search
+  sources:
+    - name: pods
+      kubernetes: {namespaces: [search]}
+  sampling: {keepPercent: {info: 150}}

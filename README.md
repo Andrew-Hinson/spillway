@@ -6,7 +6,7 @@ Spillway is a Kubernetes log platform that will turn a short YAML spec per team 
 
 **M1 (real traffic, end to end) is built.** Live Wikimedia edits and the cluster's own pod logs flow through Kafka and Vector into Loki and can be queried in Grafana, and a baseline has been recorded.
 
-**M2 (the operator) is under way.** Applying a `LogPipeline` now changes what runs. The operator renders every pipeline into the aggregator's config, checks it with `vector validate`, rolls the aggregator, and marks each pipeline Ready, or Invalid with the reason. Malformed specs are rejected at apply time, and config Vector would reject never reaches the aggregator. Still to come in M2: a CLI, VRL unit tests, and canary rollouts. Policy features and benchmarks (M3–M4) haven't started. See the [build plan](docs/plan.md).
+**M2 (the operator) is under way.** Applying a `LogPipeline` now changes what runs. The operator renders every pipeline into the aggregator's config, checks it with `vector validate`, rolls the aggregator, and marks each pipeline Ready, or Invalid with the reason. Malformed specs are rejected at apply time, and config Vector would reject never reaches the aggregator. `spillwayctl` runs the same checks without a cluster. Still to come in M2: VRL unit tests and canary rollouts. Policy features and benchmarks (M3–M4) haven't started. See the [build plan](docs/plan.md).
 
 ## Architecture
 
@@ -77,6 +77,26 @@ wiki-copy   wiki        False   Invalid     team "wiki" is claimed by both defau
 payments    payments    False   Invalid     default/payments routes to cold storage, but no cold storage is configured
 ```
 
+### Checking specs without a cluster
+
+`spillwayctl` runs the operator's checks locally, for a quick loop while writing a spec or as a CI step:
+1. Each spec is checked against the CRD schema, using the API server's own validation libraries, so you see the same errors `kubectl apply` would give.
+2. All specs are rendered together, which catches conflicts such as a team claimed twice.
+3. The rendered config goes through `vector validate`.
+
+```bash
+make spillwayctl
+bin/spillwayctl validate --vector-bin bin/vector examples/        # exit 1 if anything is invalid
+bin/spillwayctl render examples/minimal.yaml > aggregator.yaml   # the config the operator would apply
+```
+
+```
+examples/minimal.yaml (search): ok
+broken.yaml (broken): INVALID
+  * spec.sources[0]: Invalid value: exactly one of kafka or kubernetes must be set
+render: ok (1 pipeline)
+```
+
 Cold storage (MinIO) arrives in M3. Until then, pipelines that route to cold storage are marked Invalid instead of being rolled out with a sink that has nowhere to write.
 
 ## Development
@@ -107,10 +127,12 @@ Latency is measured from the feeder handing an event to Kafka until the aggregat
 ```
 api/v1alpha1/        LogPipeline API types (the CRD is generated from these)
 cmd/operator/        operator entrypoint and Dockerfile
+cmd/spillwayctl/     CLI: validate and render specs without a cluster
 internal/controller/ LogPipeline reconciler
 internal/render/     LogPipeline → Vector config, with golden files
 internal/redact/     PII patterns as VRL redact() filters
 internal/validate/   vector validate gate for rendered config
+internal/schema/     offline CRD schema validation (same libraries as the API server)
 examples/            example LogPipeline specs
 feeders/wikimedia/   Go SSE → Kafka feeder
 vector/              agent and aggregator configs, Helm values, unit tests

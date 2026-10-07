@@ -1,0 +1,8 @@
+# want: spec.sources: Invalid value
+apiVersion: spillway.dev/v1alpha1
+kind: LogPipeline
+metadata:
+  name: no-sources
+spec:
+  team: search
+  sources: []

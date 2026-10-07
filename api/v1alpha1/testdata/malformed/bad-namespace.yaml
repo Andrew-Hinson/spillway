@@ -1,0 +1,10 @@
+# want: spec.sources[0].kubernetes.namespaces[0]: Invalid value
+apiVersion: spillway.dev/v1alpha1
+kind: LogPipeline
+metadata:
+  name: bad-namespace
+spec:
+  team: search
+  sources:
+    - name: pods
+      kubernetes: {namespaces: [Payments]}

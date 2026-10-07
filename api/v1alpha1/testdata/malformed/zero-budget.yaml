@@ -1,0 +1,11 @@
+# want: should be greater than or equal to 1
+apiVersion: spillway.dev/v1alpha1
+kind: LogPipeline
+metadata:
+  name: zero-budget
+spec:
+  team: search
+  sources:
+    - name: pods
+      kubernetes: {namespaces: [search]}
+  budget: {maxEventsPerSec: 0}

@@ -1,0 +1,10 @@
+# want: spec.team: Required value
+apiVersion: spillway.dev/v1alpha1
+kind: LogPipeline
+metadata:
+  name: missing-team
+spec:
+
+  sources:
+    - name: pods
+      kubernetes: {namespaces: [search]}

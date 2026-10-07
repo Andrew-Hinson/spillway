@@ -1,0 +1,10 @@
+# want: spec.sources[0].kafka.topic: Invalid value
+apiVersion: spillway.dev/v1alpha1
+kind: LogPipeline
+metadata:
+  name: bad-kafka-topic
+spec:
+  team: search
+  sources:
+    - name: k
+      kafka: {topic: "no spaces allowed"}

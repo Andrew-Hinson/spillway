@@ -1,0 +1,11 @@
+# want: unknown field "spec.budget.maxEventPerSec"
+apiVersion: spillway.dev/v1alpha1
+kind: LogPipeline
+metadata:
+  name: misspelled-field
+spec:
+  team: search
+  sources:
+    - name: pods
+      kubernetes: {namespaces: [search]}
+  budget: {maxEventPerSec: 10}
