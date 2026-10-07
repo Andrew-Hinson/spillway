@@ -126,9 +126,11 @@ spec:
                       rule: self.all(k, k.matches('^[a-z][a-z0-9_-]{0,31}$'))
                   levelField:
                     default: level
-                    description: LevelField is the event field holding the log level.
+                    description: |-
+                      LevelField is the event field holding the log level, as a dot-separated
+                      path such as "level" or "log.level".
                     maxLength: 256
-                    minLength: 1
+                    pattern: ^[A-Za-z0-9_@-]+(\.[A-Za-z0-9_@-]+)*$
                     type: string
                 required:
                 - keepPercent

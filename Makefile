@@ -181,13 +181,19 @@ operator: docker-check $(KIND) $(KUBECTL) ## Build, load and deploy the operator
 	$(KUBECTL) -n spillway-system rollout status deployment/spillway-operator --timeout=3m
 
 .PHONY: vector-check
-vector-check: docker-check ## Validate and unit-test the Vector configs
+vector-check: docker-check ## Validate and unit-test the Vector configs, including rendered examples
 	docker run --rm -v $(CURDIR)/vector:/vector:ro $(VECTOR_IMAGE) \
 		validate --no-environment /vector/aggregator/vector.yaml
 	docker run --rm -v $(CURDIR)/vector:/vector:ro -e VECTOR_SELF_NODE_NAME=ci $(VECTOR_IMAGE) \
 		validate --no-environment /vector/agent/vector.yaml
 	docker run --rm -v $(CURDIR)/vector:/vector:ro $(VECTOR_IMAGE) \
 		test /vector/aggregator/vector.yaml /vector/tests/aggregator.yaml
+	@# The renderer's golden files: every example spec must render a valid config.
+	for f in internal/render/testdata/*.yaml; do \
+		echo "validate $$f"; \
+		docker run --rm -v $(CURDIR)/internal/render/testdata:/rendered:ro $(VECTOR_IMAGE) \
+			validate --no-environment /rendered/$$(basename $$f) || exit 1; \
+	done
 
 .PHONY: baseline
 baseline: $(KUBECTL) ## Print volume and latency over the last WINDOW (default 15m) as Markdown

@@ -104,10 +104,11 @@ type Percent int32
 
 // Sampling keeps a percentage of events per log level.
 type Sampling struct {
-	// LevelField is the event field holding the log level.
+	// LevelField is the event field holding the log level, as a dot-separated
+	// path such as "level" or "log.level".
 	// +kubebuilder:default=level
-	// +kubebuilder:validation:MinLength=1
 	// +kubebuilder:validation:MaxLength=256
+	// +kubebuilder:validation:Pattern=`^[A-Za-z0-9_@-]+(\.[A-Za-z0-9_@-]+)*$`
 	// +optional
 	LevelField string `json:"levelField,omitempty"`
 
