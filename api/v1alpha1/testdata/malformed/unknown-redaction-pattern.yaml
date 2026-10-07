@@ -1,0 +1,11 @@
+# want: Unsupported value: "creditcard"
+apiVersion: spillway.dev/v1alpha1
+kind: LogPipeline
+metadata:
+  name: unknown-redaction-pattern
+spec:
+  team: search
+  sources:
+    - name: pods
+      kubernetes: {namespaces: [search]}
+  redaction: {patterns: [creditcard]}

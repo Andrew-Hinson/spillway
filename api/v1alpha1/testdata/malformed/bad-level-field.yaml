@@ -1,0 +1,11 @@
+# want: spec.sampling.levelField: Invalid value
+apiVersion: spillway.dev/v1alpha1
+kind: LogPipeline
+metadata:
+  name: bad-level-field
+spec:
+  team: search
+  sources:
+    - name: pods
+      kubernetes: {namespaces: [search]}
+  sampling: {levelField: "log level", keepPercent: {info: 10}}

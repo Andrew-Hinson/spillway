@@ -1,0 +1,11 @@
+# want: at least one of hot or cold must be enabled
+apiVersion: spillway.dev/v1alpha1
+kind: LogPipeline
+metadata:
+  name: no-sink-enabled
+spec:
+  team: search
+  sources:
+    - name: pods
+      kubernetes: {namespaces: [search]}
+  routing: {hot: false}

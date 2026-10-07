@@ -1,0 +1,9 @@
+# want: exactly one of kafka or kubernetes must be set
+apiVersion: spillway.dev/v1alpha1
+kind: LogPipeline
+metadata:
+  name: source-with-no-type
+spec:
+  team: search
+  sources:
+    - name: empty

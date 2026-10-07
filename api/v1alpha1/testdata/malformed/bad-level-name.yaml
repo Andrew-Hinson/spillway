@@ -1,0 +1,11 @@
+# want: levels must be lowercase words
+apiVersion: spillway.dev/v1alpha1
+kind: LogPipeline
+metadata:
+  name: bad-level-name
+spec:
+  team: search
+  sources:
+    - name: pods
+      kubernetes: {namespaces: [search]}
+  sampling: {keepPercent: {INFO: 10}}

@@ -121,57 +121,34 @@ spec:
 	}
 }
 
-func TestMalformedSpecsAreRejected(t *testing.T) {
-	const source = `
-  sources:
-    - name: pods
-      kubernetes: {namespaces: [search]}`
-	cases := []struct {
-		name string
-		spec string // the body of .spec
-		want string // a substring of the API server's error
-	}{
-		{"missing team", source, `spec.team: Required value`},
-		{"team not a DNS label", "  team: Search Team" + source, `spec.team: Invalid value`},
-		{"no sources", "  team: search\n  sources: []", `spec.sources: Invalid value`},
-		{"source with two types", `  team: search
-  sources:
-    - name: both
-      kafka: {topic: logs}
-      kubernetes: {namespaces: [search]}`, `exactly one of kafka or kubernetes must be set`},
-		{"source with no type", `  team: search
-  sources:
-    - name: empty`, `exactly one of kafka or kubernetes must be set`},
-		{"duplicate source names", `  team: search
-  sources:
-    - name: pods
-      kubernetes: {namespaces: [a]}
-    - name: pods
-      kubernetes: {namespaces: [b]}`, `Duplicate value`},
-		{"bad kafka topic", `  team: search
-  sources:
-    - name: k
-      kafka: {topic: "no spaces allowed"}`, `spec.sources[0].kafka.topic: Invalid value`},
-		{"bad namespace", `  team: search
-  sources:
-    - name: pods
-      kubernetes: {namespaces: [Payments]}`, `spec.sources[0].kubernetes.namespaces[0]: Invalid value`},
-		{"unknown redaction pattern", "  team: search" + source + `
-  redaction: {patterns: [creditcard]}`, `Unsupported value: "creditcard"`},
-		{"sample percent over 100", "  team: search" + source + `
-  sampling: {keepPercent: {info: 150}}`, `should be less than or equal to 100`},
-		{"bad level name", "  team: search" + source + `
-  sampling: {keepPercent: {INFO: 10}}`, `levels must be lowercase words`},
-		{"zero budget", "  team: search" + source + `
-  budget: {maxEventsPerSec: 0}`, `should be greater than or equal to 1`},
-		{"no sink enabled", "  team: search" + source + `
-  routing: {hot: false}`, `at least one of hot or cold must be enabled`},
-		{"misspelled field", "  team: search" + source + `
-  budget: {maxEventPerSec: 10}`, `unknown field "spec.budget.maxEventPerSec"`},
+// MalformedFixtures returns the malformed specs in testdata/malformed and the
+// error each must be rejected with (its "# want:" line).
+func malformedFixtures(t *testing.T) map[string]struct{ manifest, want string } {
+	t.Helper()
+	files, err := filepath.Glob(filepath.Join("testdata", "malformed", "*.yaml"))
+	if err != nil || len(files) == 0 {
+		t.Fatalf("no malformed fixtures: %v", err)
 	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			_, err := create(t, "apiVersion: spillway.dev/v1alpha1\nkind: LogPipeline\nspec:\n"+tc.spec)
+	out := map[string]struct{ manifest, want string }{}
+	for _, f := range files {
+		b, err := os.ReadFile(f)
+		if err != nil {
+			t.Fatal(err)
+		}
+		first, _, _ := strings.Cut(string(b), "\n")
+		want, ok := strings.CutPrefix(first, "# want: ")
+		if !ok {
+			t.Fatalf("%s: first line must be \"# want: <error text>\"", f)
+		}
+		out[strings.TrimSuffix(filepath.Base(f), ".yaml")] = struct{ manifest, want string }{string(b), want}
+	}
+	return out
+}
+
+func TestMalformedSpecsAreRejected(t *testing.T) {
+	for name, tc := range malformedFixtures(t) {
+		t.Run(name, func(t *testing.T) {
+			_, err := create(t, tc.manifest)
 			if err == nil {
 				t.Fatalf("accepted, want rejection containing %q", tc.want)
 			}

@@ -1,0 +1,10 @@
+# want: spec.team: Invalid value
+apiVersion: spillway.dev/v1alpha1
+kind: LogPipeline
+metadata:
+  name: team-not-a-dns-label
+spec:
+  team: Search Team
+  sources:
+    - name: pods
+      kubernetes: {namespaces: [search]}

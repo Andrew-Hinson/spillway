@@ -1,0 +1,12 @@
+# want: Duplicate value
+apiVersion: spillway.dev/v1alpha1
+kind: LogPipeline
+metadata:
+  name: duplicate-source-names
+spec:
+  team: search
+  sources:
+    - name: pods
+      kubernetes: {namespaces: [a]}
+    - name: pods
+      kubernetes: {namespaces: [b]}
