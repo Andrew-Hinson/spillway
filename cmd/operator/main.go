@@ -6,20 +6,37 @@ import (
 	"flag"
 	"os"
 
+	appsv1 "k8s.io/api/apps/v1"
+	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/cache"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
 	spillwayv1alpha1 "github.com/Andrew-Hinson/spillway/api/v1alpha1"
 	"github.com/Andrew-Hinson/spillway/internal/controller"
+	"github.com/Andrew-Hinson/spillway/internal/render"
 )
 
 func main() {
 	var metricsAddr, probeAddr string
 	var leaderElect bool
+	rec := controller.AggregatorReconciler{Options: render.DefaultOptions()}
+	// Cold storage (MinIO) isn't deployed until M3.5: until it's configured,
+	// pipelines that route to cold are marked Invalid rather than rendered
+	// with a sink that would block once its buffer filled.
+	rec.Options.Cold = nil
+	var cold render.ColdStorage
+	flag.StringVar(&rec.Namespace, "aggregator-namespace", "vector", "namespace of the Vector aggregator")
+	flag.StringVar(&rec.StatefulSet, "aggregator-statefulset", "vector-aggregator", "the aggregator's StatefulSet")
+	flag.StringVar(&rec.ConfigMap, "aggregator-configmap", "vector-aggregator-config", "the ConfigMap the aggregator loads its config from")
+	flag.StringVar(&cold.Bucket, "cold-bucket", "", "S3 bucket for cold storage; empty disables cold routing")
+	flag.StringVar(&cold.Endpoint, "cold-endpoint", "", "S3 endpoint, e.g. http://minio.storage.svc:9000 (empty for AWS)")
+	flag.StringVar(&cold.Region, "cold-region", "us-east-1", "S3 region")
 	flag.StringVar(&metricsAddr, "metrics-bind-address", ":8080", "address for /metrics")
 	flag.StringVar(&probeAddr, "health-probe-bind-address", ":8081", "address for /healthz and /readyz")
 	flag.BoolVar(&leaderElect, "leader-elect", false, "elect a leader, so only one replica reconciles at a time")
@@ -27,6 +44,9 @@ func main() {
 	opts.BindFlags(flag.CommandLine)
 	flag.Parse()
 
+	if cold.Bucket != "" {
+		rec.Options.Cold = &cold
+	}
 	ctrl.SetLogger(zap.New(zap.UseFlagOptions(&opts)))
 	log := ctrl.Log.WithName("setup")
 
@@ -46,14 +66,21 @@ func main() {
 		HealthProbeBindAddress: probeAddr,
 		LeaderElection:         leaderElect,
 		LeaderElectionID:       "spillway-operator.spillway.dev",
+		// The operator may only read ConfigMaps and StatefulSets in the
+		// aggregator's namespace, so it caches only those.
+		Cache: cache.Options{ByObject: map[client.Object]cache.ByObject{
+			&corev1.ConfigMap{}:   {Namespaces: map[string]cache.Config{rec.Namespace: {}}},
+			&appsv1.StatefulSet{}: {Namespaces: map[string]cache.Config{rec.Namespace: {}}},
+		}},
 	})
 	if err != nil {
 		log.Error(err, "creating manager")
 		os.Exit(1)
 	}
 
-	if err := (&controller.LogPipelineReconciler{Client: mgr.GetClient()}).SetupWithManager(mgr); err != nil {
-		log.Error(err, "setting up the LogPipeline controller")
+	rec.Client = mgr.GetClient()
+	if err := rec.SetupWithManager(mgr); err != nil {
+		log.Error(err, "setting up the aggregator controller")
 		os.Exit(1)
 	}
 	if err := mgr.AddHealthzCheck("healthz", healthz.Ping); err != nil {

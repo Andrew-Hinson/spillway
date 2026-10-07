@@ -6,7 +6,7 @@ Spillway is a Kubernetes log platform that will turn a short YAML spec per team 
 
 **M1 (real traffic, end to end) is built.** Live Wikimedia edits and the cluster's own pod logs flow through Kafka and Vector into Loki and can be queried in Grafana, and a baseline has been recorded.
 
-**M2 (the operator) is under way.** The `LogPipeline` CRD and a scaffolded operator are in place, and the API server rejects malformed specs at apply time. A renderer turns specs into a complete Vector aggregator config, but the operator doesn't use it yet. Wiring it into the operator, validating the config and rolling it out come next. Policy features and benchmarks (M3–M4) haven't started. See the [build plan](docs/plan.md).
+**M2 (the operator) is under way.** Applying a `LogPipeline` now changes what runs. The operator renders every pipeline into the aggregator's config, rolls the aggregator, and marks each pipeline Ready, or Invalid with the reason. Malformed specs are rejected at apply time. Still to come in M2: running `vector validate` before rollout, a CLI, VRL unit tests, and canary rollouts. Policy features and benchmarks (M3–M4) haven't started. See the [build plan](docs/plan.md).
 
 ## Architecture
 
@@ -20,8 +20,8 @@ pod logs on every node ──► Vector agent (DaemonSet) ───────�
 - **Feeder** ([`feeders/wikimedia`](feeders/wikimedia)): reads the `recentchange` SSE stream, resumes from the last event ID after a disconnect, and stamps each event with a unique ID and a produce timestamp before writing it to Kafka.
 - **Aggregator** ([`vector/aggregator`](vector/aggregator)): consumes from Kafka and stamps each event with a pre-sink time, so feeder-to-sink latency can be measured. It writes to Loki through a 1 GiB disk buffer and commits Kafka offsets only once events are in that buffer.
 - **Agent** ([`vector/agent`](vector/agent)): runs on every node, tails pod logs, and forwards them to the aggregator. The aggregator writes them to Loki through a separate sink, labelled `namespace`, `pod` and `container`.
-- **Operator** ([`cmd/operator`](cmd/operator), [`api/v1alpha1`](api/v1alpha1)): watches `LogPipeline` resources, one per team. For now it only logs what it sees.
-- **Renderer** ([`internal/render`](internal/render)): turns LogPipelines into one aggregator config. Each team's events are tagged and redacted, then split. Cold storage gets the complete redacted stream. The hot path is sampled and rate-capped before Loki. Sinks are shared, so adding a team doesn't add disk buffers. The rendered config for each example is checked in under [`internal/render/testdata`](internal/render/testdata) and validated by Vector in CI.
+- **Operator** ([`cmd/operator`](cmd/operator), [`internal/controller`](internal/controller)): watches `LogPipeline` resources, one per team. On every change it renders all of them into the aggregator's ConfigMap. It then rolls the aggregator via a config-hash annotation on its pod template and sets each pipeline's Ready condition. If two pipelines conflict, the older one keeps the team or namespace and the newer one is marked Invalid. Manual edits to the ConfigMap are reverted.
+- **Renderer** ([`internal/render`](internal/render)): turns LogPipelines into one aggregator config. Each team's events are tagged and redacted, then split. Cold storage gets the complete redacted stream. The hot path is sampled and rate-capped before Loki. Sinks are shared, so adding a team doesn't add disk buffers. Data no team claims takes the platform defaults, which are the M1 paths above. A topic or namespace a team claims leaves those paths, so the team's redaction can't be bypassed. With no LogPipelines the render is exactly the M1 pipeline, and [`vector/aggregator/vector.yaml`](vector/aggregator/vector.yaml) is generated from it. The rendered config for each example is checked in under [`internal/render/testdata`](internal/render/testdata) and validated by Vector in CI.
 - **Self-monitoring**: Prometheus scrapes the feeder and every Vector instance. The *Spillway pipeline* dashboard ([`dashboards/pipeline.json`](dashboards/pipeline.json)) shows throughput, latency, consumer lag, buffer size and errors.
 
 ## Quickstart
@@ -68,7 +68,16 @@ The LogPipeline "broken" is invalid:
 * spec.routing: Invalid value: at least one of hot or cold must be enabled
 ```
 
-Only the schema is enforced in the cluster so far. The renderer handles every field, but the operator doesn't apply its output yet, so specs have no effect on the running pipeline until M2.3.
+Once a spec is applied, `kubectl get lp` shows whether it's running:
+
+```
+NAME        TEAM        READY   REASON      MESSAGE
+wiki        wiki        True    RolledOut   the aggregator is running config that includes this pipeline
+wiki-copy   wiki        False   Invalid     team "wiki" is claimed by both default/wiki and default/wiki-copy
+payments    payments    False   Invalid     default/payments routes to cold storage, but no cold storage is configured
+```
+
+Cold storage (MinIO) arrives in M3. Until then, pipelines that route to cold storage are marked Invalid instead of being rolled out with a sink that has nowhere to write.
 
 ## Development
 

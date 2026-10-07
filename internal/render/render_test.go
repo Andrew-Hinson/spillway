@@ -40,7 +40,11 @@ func loadExamples(t *testing.T) map[string]spillwayv1alpha1.LogPipeline {
 
 func golden(t *testing.T, name string, got []byte) {
 	t.Helper()
-	path := filepath.Join("testdata", name+".yaml")
+	goldenAt(t, filepath.Join("testdata", name+".yaml"), got)
+}
+
+func goldenAt(t *testing.T, path string, got []byte) {
+	t.Helper()
 	if *update {
 		if err := os.WriteFile(path, got, 0o644); err != nil {
 			t.Fatal(err)
@@ -142,14 +146,62 @@ func TestConflictsAreRejected(t *testing.T) {
 	}
 }
 
-func TestNoPipelinesRendersBaseConfig(t *testing.T) {
+// With no pipelines the renderer produces the M1 pipeline, which is also the
+// aggregator's bootstrap config before the operator takes over.
+func TestNoPipelinesRendersBootstrapConfig(t *testing.T) {
 	got, err := Render(nil, DefaultOptions())
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, unwanted := range []string{"hot_loki", "cold_s3", "agents"} {
-		if bytes.Contains(got, []byte(unwanted)) {
-			t.Errorf("base config contains %q:\n%s", unwanted, got)
+	goldenAt(t, filepath.Join("..", "..", "vector", "aggregator", "vector.yaml"), got)
+}
+
+func TestClaimedDataLeavesThePlatformPath(t *testing.T) {
+	examples := loadExamples(t)
+	cfg := func(pipelines ...spillwayv1alpha1.LogPipeline) map[string]map[string]any {
+		t.Helper()
+		out, err := Render(pipelines, DefaultOptions())
+		if err != nil {
+			t.Fatal(err)
 		}
+		var c struct {
+			Sources, Transforms, Sinks map[string]any
+		}
+		if err := yaml.Unmarshal(out, &c); err != nil {
+			t.Fatal(err)
+		}
+		return map[string]map[string]any{"sources": c.Sources, "transforms": c.Transforms, "sinks": c.Sinks}
+	}
+
+	// payments claims two namespaces: the platform pod-log path filters them out.
+	c := cfg(examples["payments"])
+	f, ok := c["transforms"]["unclaimed_pods"].(map[string]any)
+	if !ok {
+		t.Fatal("no unclaimed_pods filter with a namespace claimed")
+	}
+	if want := `!includes(["payments", "payments-batch"], .kubernetes.pod_namespace)`; f["condition"] != want {
+		t.Errorf("unclaimed_pods condition = %q, want %q", f["condition"], want)
+	}
+	if _, ok := c["sources"]["wikimedia"]; !ok {
+		t.Error("platform feeder path missing although no team reads the feeder topic")
+	}
+
+	// content reads the feeder topic: the platform feeder path goes away.
+	c = cfg(examples["content"])
+	for _, id := range []string{"wikimedia"} {
+		if _, ok := c["sources"][id]; ok {
+			t.Errorf("platform source %q still rendered with the feeder topic claimed", id)
+		}
+	}
+	for _, id := range []string{"stamp", "latency_metrics"} {
+		if _, ok := c["transforms"][id]; ok {
+			t.Errorf("platform transform %q still rendered with the feeder topic claimed", id)
+		}
+	}
+	if _, ok := c["sinks"]["loki"]; ok {
+		t.Error("platform loki sink still rendered with the feeder topic claimed")
+	}
+	if _, ok := c["transforms"]["unclaimed_pods"]; ok {
+		t.Error("unclaimed_pods rendered although no namespace is claimed")
 	}
 }

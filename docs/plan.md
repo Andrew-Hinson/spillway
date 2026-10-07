@@ -76,7 +76,7 @@ Each line is one GitHub issue: the title, then the acceptance criteria after the
 
 1. [x] Scaffold operator and LogPipeline CRD — schema validation rejects malformed specs at apply time
 2. [x] Renderer: spec to Vector config — golden-file tests for each example spec
-3. [ ] Reconcile and roll out — rendered config applied to aggregators, status conditions Ready / Invalid set on the resource
+3. [x] Reconcile and roll out — rendered config applied to aggregators, status conditions Ready / Invalid set on the resource
 4. [ ] Validation gate — `vector validate` runs on rendered config before apply, either in a Job or with Vector bundled in the operator image (decision recorded as an ADR); a bad spec never reaches a running aggregator
 5. [ ] `spillwayctl render` and `validate` — same renderer as the operator, usable without a cluster
 6. [ ] VRL unit tests in CI — every generated transform covered by `vector test`

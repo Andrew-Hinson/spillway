@@ -152,13 +152,13 @@ wikimedia-feeder: docker-check $(KIND) $(KUBECTL) ## Build, load and deploy the 
 .PHONY: aggregator
 aggregator: $(HELM) $(KUBECTL) ## Deploy the Vector aggregator (Kafka -> Loki)
 	$(KUBECTL) create namespace vector --dry-run=client -o yaml | $(KUBECTL) apply -f -
-	$(KUBECTL) -n vector create configmap vector-aggregator-config \
-		--from-file=vector/aggregator/vector.yaml --dry-run=client -o yaml | $(KUBECTL) apply -f -
-	@# The config hash annotation rolls the pod when vector.yaml changes.
+	@# Bootstrap config only: once running, the operator owns this ConfigMap and
+	@# renders it from the LogPipelines, so an existing one is left alone.
+	$(KUBECTL) -n vector get configmap vector-aggregator-config >/dev/null 2>&1 || \
+		$(KUBECTL) -n vector create configmap vector-aggregator-config --from-file=vector/aggregator/vector.yaml
 	$(HELM_INSTALL) vector-aggregator vector --repo https://helm.vector.dev \
 		--version $(VECTOR_CHART_VERSION) --namespace vector \
-		-f vector/aggregator/values.yaml \
-		--set-string 'podAnnotations.checksum/config=$(shell sha256sum vector/aggregator/vector.yaml | cut -c1-12)'
+		-f vector/aggregator/values.yaml
 
 .PHONY: agent
 agent: $(HELM) $(KUBECTL) ## Deploy the Vector agent DaemonSet (pod logs -> aggregator)
@@ -176,6 +176,7 @@ operator: docker-check $(KIND) $(KUBECTL) ## Build, load and deploy the operator
 	$(KIND) load docker-image $(OPERATOR_IMAGE):$(OPERATOR_TAG) --name $(CLUSTER_NAME)
 	$(KUBECTL) apply --server-side -f deploy/operator/crd
 	$(KUBECTL) wait crd/logpipelines.spillway.dev --for=condition=Established --timeout=1m
+	$(KUBECTL) create namespace vector --dry-run=client -o yaml | $(KUBECTL) apply -f -
 	$(KUBECTL) apply -f deploy/operator/rbac
 	sed 's|$(OPERATOR_IMAGE):dev|$(OPERATOR_IMAGE):$(OPERATOR_TAG)|' deploy/operator/operator.yaml | $(KUBECTL) apply -f -
 	$(KUBECTL) -n spillway-system rollout status deployment/spillway-operator --timeout=3m

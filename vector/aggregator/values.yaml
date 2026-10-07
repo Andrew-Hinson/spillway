@@ -1,6 +1,7 @@
 # Helm values for the Vector aggregator (chart: vector, https://helm.vector.dev).
-# The pipeline itself is vector.yaml next to this file, mounted from a
-# ConfigMap that `make aggregator` creates.
+# The pipeline is rendered by the operator into the vector-aggregator-config
+# ConfigMap; `make aggregator` seeds it with vector.yaml next to this file (the
+# render with no LogPipelines, i.e. the M1 pipeline).
 role: Aggregator
 replicas: 1
 
@@ -12,10 +13,12 @@ podAnnotations:
   prometheus.io/scrape: "true"
   prometheus.io/port: "9598"
 
-# Holds the disk buffer, so buffered events survive a restart.
+# Holds the disk buffers, so buffered events survive a restart: up to 3 GiB
+# once teams route hot and cold (loki 1 GiB, loki_pods 512 MiB, hot_loki
+# 1 GiB, cold_s3 512 MiB).
 persistence:
   enabled: true
-  size: 2Gi
+  size: 4Gi
 
 service:
   ports:
