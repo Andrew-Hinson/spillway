@@ -38,3 +38,16 @@ func Filters(patterns []spillwayv1alpha1.RedactionPattern) ([]string, error) {
 	}
 	return out, nil
 }
+
+// examples holds a value each pattern must mask, for generated tests.
+var examples = map[spillwayv1alpha1.RedactionPattern]string{
+	spillwayv1alpha1.RedactSSN:      "123-45-6789",
+	spillwayv1alpha1.RedactEmail:    "jo.doe@example.com",
+	spillwayv1alpha1.RedactPhone:    "(555) 867-5309",
+	spillwayv1alpha1.RedactMemberID: "MBR-12345678",
+}
+
+// Example returns a value the pattern must mask.
+func Example(p spillwayv1alpha1.RedactionPattern) string {
+	return examples[p]
+}

@@ -20,6 +20,7 @@ import (
 	"strings"
 
 	"k8s.io/apimachinery/pkg/runtime"
+	"sigs.k8s.io/yaml"
 
 	spillwayv1alpha1 "github.com/Andrew-Hinson/spillway/api/v1alpha1"
 	"github.com/Andrew-Hinson/spillway/internal/render"
@@ -33,10 +34,12 @@ Usage:
   spillwayctl validate [flags] FILE|DIR...   check specs the way the cluster would; exit 1 if any are invalid
   spillwayctl render   [flags] FILE|DIR...   print the aggregator config the specs render to
 
-validate runs three checks, in order:
+validate runs four checks, in order:
   1. each spec against the LogPipeline CRD schema, as kubectl apply would
   2. all specs rendered together (conflicts such as a team claimed twice)
-  3. the rendered config with vector validate (skip with --no-vector)
+  3. the rendered config with vector validate
+  4. the unit tests generated for that config with vector test
+Steps 3 and 4 need the vector binary; skip them with --no-vector.
 
 Directories are read for *.yaml and *.yml files; a file may hold several
 documents separated by ---.
@@ -67,7 +70,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	fs.StringVar(&cold.Region, "cold-region", "us-east-1", "S3 region")
 	out := fs.String("o", "", "render: write the config to this file instead of stdout")
 	vectorBin := fs.String("vector-bin", "vector", "validate: the vector binary (use the aggregator's version)")
-	noVector := fs.Bool("no-vector", false, "validate: skip the vector validate step")
+	noVector := fs.Bool("no-vector", false, "validate: skip the vector validate and vector test steps")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
@@ -114,7 +117,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		return 0
 	}
 
-	cfg, err := render.Render(pipelines, opts)
+	cfg, tests, err := render.RenderWithTests(pipelines, opts)
 	if err != nil {
 		fmt.Fprintln(stdout, "render: FAIL:", err)
 		return 1
@@ -124,7 +127,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 	if *noVector {
-		fmt.Fprintln(stdout, "vector validate: skipped (--no-vector)")
+		fmt.Fprintln(stdout, "vector validate, vector test: skipped (--no-vector)")
 		return 0
 	}
 	bin, err := exec.LookPath(*vectorBin)
@@ -132,11 +135,19 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "vector validate: can't find %q (install Vector, pass --vector-bin, or skip with --no-vector)\n", *vectorBin)
 		return 1
 	}
-	if err := (validate.Vector{Bin: bin}).Validate(ctx, cfg); err != nil {
+	vector := validate.Vector{Bin: bin}
+	if err := vector.Validate(ctx, cfg); err != nil {
 		fmt.Fprintln(stdout, "vector validate: FAIL:", err)
 		return 1
 	}
 	fmt.Fprintln(stdout, "vector validate: ok")
+	if err := vector.Test(ctx, cfg, tests); err != nil {
+		fmt.Fprintln(stdout, "vector test: FAIL:", err)
+		return 1
+	}
+	var suite struct{ Tests []any }
+	_ = yaml.Unmarshal(tests, &suite)
+	fmt.Fprintf(stdout, "vector test: ok (%s)\n", plural(len(suite.Tests), "test"))
 	return 0
 }
 

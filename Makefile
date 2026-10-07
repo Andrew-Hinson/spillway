@@ -188,18 +188,22 @@ operator: docker-check $(KIND) $(KUBECTL) ## Build, load and deploy the operator
 	$(KUBECTL) -n spillway-system rollout status deployment/spillway-operator --timeout=3m
 
 .PHONY: vector-check
-vector-check: docker-check ## Validate and unit-test the Vector configs, including rendered examples
+vector-check: docker-check ## Validate and unit-test the Vector configs, including every rendered example
 	docker run --rm -v $(CURDIR)/vector:/vector:ro $(VECTOR_IMAGE) \
 		validate --no-environment /vector/aggregator/vector.yaml
 	docker run --rm -v $(CURDIR)/vector:/vector:ro -e VECTOR_SELF_NODE_NAME=ci $(VECTOR_IMAGE) \
 		validate --no-environment /vector/agent/vector.yaml
 	docker run --rm -v $(CURDIR)/vector:/vector:ro $(VECTOR_IMAGE) \
 		test /vector/aggregator/vector.yaml /vector/tests/aggregator.yaml
-	@# The renderer's golden files: every example spec must render a valid config.
-	for f in internal/render/testdata/*.yaml; do \
-		echo "validate $$f"; \
+	@# The renderer's golden files: every example spec must render a valid config
+	@# that passes the unit tests generated for it.
+	for f in $$(ls internal/render/testdata/*.yaml | grep -v '\.tests\.yaml$$'); do \
+		name=$$(basename $$f .yaml); \
+		echo "validate and test $$f"; \
 		docker run --rm -v $(CURDIR)/internal/render/testdata:/rendered:ro $(VECTOR_IMAGE) \
-			validate --no-environment /rendered/$$(basename $$f) || exit 1; \
+			validate --no-environment /rendered/$$name.yaml || exit 1; \
+		docker run --rm -v $(CURDIR)/internal/render/testdata:/rendered:ro $(VECTOR_IMAGE) \
+			test /rendered/$$name.yaml /rendered/$$name.tests.yaml || exit 1; \
 	done
 
 .PHONY: baseline

@@ -17,7 +17,8 @@ import (
 // Any spec the CRD accepts must render to config Vector accepts. This
 // generates random specs within the CRD's rules (leaning on the edges: names
 // of length 1 and 63, digits first, dots-only topics, deep level paths) and
-// runs the real `vector validate` on each render. The seed is fixed, so a
+// runs the real `vector validate` and the generated `vector test` suite on
+// each render. The seed is fixed, so a
 // failure reproduces.
 func TestEverySchemaValidSpecRendersValidConfig(t *testing.T) {
 	bin := vectorBin(t)
@@ -30,7 +31,7 @@ func TestEverySchemaValidSpecRendersValidConfig(t *testing.T) {
 		for j := range 1 + rng.IntN(3) {
 			pipelines = append(pipelines, randomPipeline(rng, fmt.Sprintf("p%d-%d", i, j)))
 		}
-		cfg, err := render.Render(pipelines, render.DefaultOptions())
+		cfg, tests, err := render.RenderWithTests(pipelines, render.DefaultOptions())
 		if err != nil {
 			continue // a cross-object conflict, which the operator marks Invalid
 		}
@@ -41,13 +42,21 @@ func TestEverySchemaValidSpecRendersValidConfig(t *testing.T) {
 			}
 			t.Fatal(err)
 		}
+		// The tests generated alongside must pass on the config they describe.
+		if err := v.Test(context.Background(), cfg, tests); err != nil {
+			var verdict *Error
+			if errors.As(err, &verdict) {
+				t.Fatalf("case %d: generated tests fail:\n%s\n--- specs ---\n%s", i, verdict.Output, describe(pipelines))
+			}
+			t.Fatal(err)
+		}
 		validated++
 	}
 	// Random names rarely collide, so nearly every case should reach Vector.
 	if validated < 35 {
 		t.Fatalf("only %d of 40 cases rendered; the generator is producing conflicts, not tests", validated)
 	}
-	t.Logf("%d random spec sets rendered and validated", validated)
+	t.Logf("%d random spec sets rendered, validated and tested", validated)
 }
 
 const (
