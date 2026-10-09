@@ -1,0 +1,67 @@
+# Fixture injector: known, fictional PII mixed into the live streams so
+# redaction can be measured (feeders/fixtures). It writes recentchange-shaped
+# fixtures into the Wikimedia topic, and JSON log lines to stdout, so a team
+# that claims the fixtures namespace gets them as pod logs. Opt-in: `make
+# fixtures`. The image tag is filled in from a hash of the injector's source.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: fixtures
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: fixture-injector
+  namespace: fixtures
+  labels:
+    app.kubernetes.io/name: fixture-injector
+    app.kubernetes.io/part-of: spillway
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: fixture-injector
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: fixture-injector
+        app.kubernetes.io/part-of: spillway
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8080"
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: injector
+          image: spillway/fixtures:dev
+          imagePullPolicy: Never   # loaded into kind by `make fixtures`
+          args: ["-rate", "$(FIXTURE_RATE)"]
+          env:
+            - name: KAFKA_BROKERS
+              value: spillway-kafka-bootstrap.kafka.svc:9092
+            - name: KAFKA_TOPIC
+              value: wikimedia.recentchange
+            - name: FIXTURE_RATE
+              value: "1"   # fixtures per second, per output
+          ports:
+            - name: metrics
+              containerPort: 8080
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: metrics
+          resources:
+            requests:
+              cpu: 10m
+              memory: 32Mi
+            limits:
+              memory: 128Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]

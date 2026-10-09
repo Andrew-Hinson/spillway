@@ -12,8 +12,11 @@ import (
 
 // filters holds one VRL redact() filter expression per pattern.
 var filters = map[spillwayv1alpha1.RedactionPattern]string{
-	// VRL's built-in US SSN matcher (NNN-NN-NNNN, excluding invalid ranges).
-	spillwayv1alpha1.RedactSSN:   `"us_social_security_number"`,
+	// Anything SSN-shaped (NNN-NN-NNNN). Deliberately broader than valid
+	// SSNs: VRL's built-in us_social_security_number matcher lets some
+	// valid-format SSNs through (234-56-7890, 123-45-0013), and for
+	// compliance an over-masked ID beats a leaked SSN.
+	spillwayv1alpha1.RedactSSN:   `r'\b\d{3}-\d{2}-\d{4}\b'`,
 	spillwayv1alpha1.RedactEmail: `r'[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}'`,
 	// North American numbers with separators, optionally with +1: 555-867-5309,
 	// (555) 867-5309, +1 555.867.5309. Separators are required so that IDs and

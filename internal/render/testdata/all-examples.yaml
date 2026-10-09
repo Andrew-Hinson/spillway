@@ -241,7 +241,7 @@ transforms:
     source: |
       # Redact every string in the event except Spillway's own metadata.
       meta = .spillway
-      . = redact(., filters: [r'[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}', r'\bMBR-\d{8}\b', r'(?:\+1[ .-]?)?(?:\(\d{3}\) ?|\b\d{3}[ .-])\d{3}[ .-]\d{4}\b', "us_social_security_number"])
+      . = redact(., filters: [r'[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}', r'\bMBR-\d{8}\b', r'(?:\+1[ .-]?)?(?:\(\d{3}\) ?|\b\d{3}[ .-])\d{3}[ .-]\d{4}\b', r'\b\d{3}-\d{2}-\d{4}\b'])
       .spillway = meta
     type: remap
   payments_sample:
