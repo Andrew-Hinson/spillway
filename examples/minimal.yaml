@@ -1,5 +1,5 @@
 # The smallest valid spec: one source, defaults for everything else (hot only,
-# no redaction, sampling or budget).
+# every PII pattern masked, no sampling or budget).
 apiVersion: spillway.dev/v1alpha1
 kind: LogPipeline
 metadata:

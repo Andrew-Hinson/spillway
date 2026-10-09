@@ -1,0 +1,123 @@
+# Redaction corpus: run through the real vector binary by corpus_test.go.
+#
+# Per pattern, through that pattern's filter alone:
+#   mask        values it must mask. Each is tested bare and inside every
+#               context in corpus_test.go (escaped JSON, glued to a label, in
+#               a URL, next to a second value...): the value must not survive.
+#   keep        strings it must leave exactly as they are.
+#   overMasked  strings that aren't PII but are masked anyway: the price of
+#               having no word boundaries (see redact.go).
+#   notMasked   PII it knowingly misses, out of scope for the pattern.
+# The last two write the limits down. The test fails if either list stops
+# being true, so they can't go stale.
+#
+# keepAll: realistic log text that must survive the whole library unchanged.
+
+ssn:
+  mask:
+    - 123-45-6789
+    - 078-05-1120    # the Woolworth wallet SSN
+    - 234-56-7890    # VRL's built-in matcher misses this one
+    - 123-45-0013    # and this one
+    - 900-12-3456    # ITIN range: same shape, same sensitivity
+    - 000-00-0000
+  keep:
+    - "2026-10-09"
+    - "10-09-2026"
+    - 2026-10-09T12:34:56Z
+    - 12-345-6789
+    - 1234-5-6789
+    - 123-4-56789
+    - 123-456-7890     # a phone number, not an SSN
+    - ISBN 978-3-16-148410-0
+    - 550e8400-e29b-41d4-a716-446655440000
+    - 4111-1111-1111-1111
+  overMasked:
+    - 1123-45-67890    # any digit run with an SSN-shaped middle
+    - 12345-67-89012
+  notMasked:
+    - 123 45 6789      # spaces or no separators: too close to ordinary numbers in text
+    - "123456789"
+
+email:
+  mask:
+    - jo.doe@example.com
+    - JO.DOE@EXAMPLE.COM
+    - first.last+tag@mail.example.co.uk
+    - o'brien@example.ie     # the ' ends the match: "o'" survives, the address doesn't
+    - user_name-1@sub-domain.example.org
+    - jörg@exämple.de
+    - 用户@例子.中国
+    - jo%40example.com       # URL-encoded, as in Wikimedia's meta.uri
+    - fixture-1760000000000@fixtures.spillway.test
+  keep:
+    - user@localhost
+    - "@mention in a comment"
+    - a @ b.com
+    - jo at example dot com
+    - "100%40 off"
+    - "@Component({selector: 'x'})"
+    - "v1.2.3@sha256"
+  overMasked:
+    - git@github.com:org/repo   # anything address-shaped, PII or not
+    - pkg@1.2.3.tgz
+  notMasked:
+    - jo [at] example [dot] com   # obfuscated by hand: not attempted
+    - jo@example                  # no TLD: indistinguishable from user@host
+
+phone:
+  mask:
+    - 555-867-5309
+    - (555) 867-5309
+    - (555)867-5309
+    - 555.867.5309
+    - 555 867 5309
+    - +1 555 867 5309
+    - +1-555-867-5309
+    - 1-555-867-5309
+    - 555-867-5309x12    # with an extension
+    - (212) 555-0142     # the fixture range
+  keep:
+    - "15558675309"
+    - 2026-10-09 12:34:56
+    - 10.0.0.1
+    - 192.168.100.200
+    - v1.24.3
+    - "12:34:56.789"
+    - 123-45-6789        # an SSN, not a phone number
+    - 1 234 567          # population figures
+  overMasked:
+    - 1.234.567.8900     # thousands separators that happen to group 3-3-4
+    - order 2026 100 2000
+  notMasked:
+    - "5558675309"           # no separators: indistinguishable from IDs and counters
+    - +44 20 7946 0958       # outside North America: not attempted
+    - +33 1 23 45 67 89
+
+memberId:
+  mask:
+    - MBR-12345678
+    - MBR-90000001
+    - MBR-00000000
+  keep:
+    - MBR-1234567        # one digit short
+    - MBR 12345678
+    - MBR12345678
+    - mbr-12345678       # member IDs are upper-case
+    - MEMBER-12345678
+  overMasked:
+    - MBR-123456789      # nine digits: the first eight are masked
+
+keepAll:
+  - 2026-10-09T12:34:56.789Z level=info msg="request served" status=200 duration_ms=12.5
+  - GET /api/v1/namespaces/payments/pods/app-5d8f9-x2x7q 200 1.2ms
+  - '{"level":"warn","ts":1760000000.123,"caller":"server/main.go:42","msg":"slow","rev":1234567890}'
+  - trace_id=4bf92f3577b34da6a3ce929d0e0e4736 span_id=00f067aa0ba902b7
+  - 550e8400-e29b-41d4-a716-446655440000
+  - sha256:9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08
+  - connected to 10.244.1.17:9092 (broker 0) after 3 retries
+  - "/* wbsetclaim-create:2||1 */ [[Property:P1082]]: 8,336,817"
+  - "[[Special:Contributions/2001:db8::1|2001:db8::1]] ([[User talk:2001:db8::1|talk]])"
+  - https://en.wikipedia.org/w/index.php?diff=1234567890&oldid=1234567889
+  - Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/141.0.0.0
+  - "price: $1,234.56; qty: 3; sku: AB-1234-XY"

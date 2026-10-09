@@ -119,6 +119,9 @@ func (c *config) testRedact(id string, patterns []spillwayv1alpha1.RedactionPatt
 			// Spillway's own metadata is never redacted.
 			fmt.Sprintf(`assert_eq!(.spillway.event_id, %q)`, v))
 	}
+	c.test(id+" leaves values that only look like PII", id,
+		vrlObject(fmt.Sprintf(`"message": %q, "spillway": {"team": "t"}`, redact.LookAlike)), id,
+		fmt.Sprintf(`assert_eq!(.message, %q)`, redact.LookAlike))
 }
 
 func (c *config) testSample(id string, s *spillwayv1alpha1.Sampling) {

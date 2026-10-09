@@ -74,9 +74,17 @@ spec:
                 - maxEventsPerSec
                 type: object
               redaction:
-                description: Redaction masks PII before logs leave the aggregator.
+                description: |-
+                  Redaction masks PII before logs leave the aggregator. It's on by
+                  default: without this field, every pattern is masked.
                 properties:
+                  disabled:
+                    description: |-
+                      Disabled turns redaction off: events reach the sinks unmasked. Use it
+                      only for data known to carry no PII.
+                    type: boolean
                   patterns:
+                    description: Patterns to mask. Omit to mask every pattern.
                     items:
                       description: RedactionPattern is a built-in PII pattern.
                       enum:
@@ -88,9 +96,10 @@ spec:
                     minItems: 1
                     type: array
                     x-kubernetes-list-type: set
-                required:
-                - patterns
                 type: object
+                x-kubernetes-validations:
+                - message: patterns can't be set when redaction is disabled
+                  rule: '!(has(self.disabled) && self.disabled && has(self.patterns))'
               routing:
                 default:
                   hot: true

@@ -23,7 +23,8 @@ type LogPipelineSpec struct {
 	// +listMapKey=name
 	Sources []Source `json:"sources"`
 
-	// Redaction masks PII before logs leave the aggregator.
+	// Redaction masks PII before logs leave the aggregator. It's on by
+	// default: without this field, every pattern is masked.
 	// +optional
 	Redaction *Redaction `json:"redaction,omitempty"`
 
@@ -90,11 +91,19 @@ const (
 	RedactMemberID RedactionPattern = "memberId"
 )
 
-// Redaction lists the patterns to mask.
+// Redaction chooses the patterns to mask, or turns redaction off.
+// +kubebuilder:validation:XValidation:rule="!(has(self.disabled) && self.disabled && has(self.patterns))",message="patterns can't be set when redaction is disabled"
 type Redaction struct {
+	// Patterns to mask. Omit to mask every pattern.
 	// +kubebuilder:validation:MinItems=1
 	// +listType=set
-	Patterns []RedactionPattern `json:"patterns"`
+	// +optional
+	Patterns []RedactionPattern `json:"patterns,omitempty"`
+
+	// Disabled turns redaction off: events reach the sinks unmasked. Use it
+	// only for data known to carry no PII.
+	// +optional
+	Disabled bool `json:"disabled,omitempty"`
 }
 
 // Percent is a whole percentage from 0 to 100.

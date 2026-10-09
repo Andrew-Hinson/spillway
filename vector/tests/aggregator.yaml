@@ -20,6 +20,152 @@ tests:
       type: vrl
     extract_from: pod_logs
 - inputs:
+  - insert_at: redact_pods
+    source: '. = {"message": "contact: jo.doe@example.com", "detail": {"note": "jo.doe@example.com"},
+      "spillway": {"team": "t", "event_id": "jo.doe@example.com"}}'
+    type: vrl
+  name: redact_pods masks email
+  outputs:
+  - conditions:
+    - source: |
+        assert!(!contains(string!(.message), "jo.doe@example.com"), message: string!(.message))
+        assert!(!contains(string!(.detail.note), "jo.doe@example.com"), message: string!(.detail.note))
+        assert!(starts_with(string!(.message), "contact: "))
+        assert_eq!(.spillway.event_id, "jo.doe@example.com")
+      type: vrl
+    extract_from: redact_pods
+- inputs:
+  - insert_at: redact_pods
+    source: '. = {"message": "contact: MBR-12345678", "detail": {"note": "MBR-12345678"},
+      "spillway": {"team": "t", "event_id": "MBR-12345678"}}'
+    type: vrl
+  name: redact_pods masks memberId
+  outputs:
+  - conditions:
+    - source: |
+        assert!(!contains(string!(.message), "MBR-12345678"), message: string!(.message))
+        assert!(!contains(string!(.detail.note), "MBR-12345678"), message: string!(.detail.note))
+        assert!(starts_with(string!(.message), "contact: "))
+        assert_eq!(.spillway.event_id, "MBR-12345678")
+      type: vrl
+    extract_from: redact_pods
+- inputs:
+  - insert_at: redact_pods
+    source: '. = {"message": "contact: (555) 867-5309", "detail": {"note": "(555)
+      867-5309"}, "spillway": {"team": "t", "event_id": "(555) 867-5309"}}'
+    type: vrl
+  name: redact_pods masks phone
+  outputs:
+  - conditions:
+    - source: |
+        assert!(!contains(string!(.message), "(555) 867-5309"), message: string!(.message))
+        assert!(!contains(string!(.detail.note), "(555) 867-5309"), message: string!(.detail.note))
+        assert!(starts_with(string!(.message), "contact: "))
+        assert_eq!(.spillway.event_id, "(555) 867-5309")
+      type: vrl
+    extract_from: redact_pods
+- inputs:
+  - insert_at: redact_pods
+    source: '. = {"message": "contact: 123-45-6789", "detail": {"note": "123-45-6789"},
+      "spillway": {"team": "t", "event_id": "123-45-6789"}}'
+    type: vrl
+  name: redact_pods masks ssn
+  outputs:
+  - conditions:
+    - source: |
+        assert!(!contains(string!(.message), "123-45-6789"), message: string!(.message))
+        assert!(!contains(string!(.detail.note), "123-45-6789"), message: string!(.detail.note))
+        assert!(starts_with(string!(.message), "contact: "))
+        assert_eq!(.spillway.event_id, "123-45-6789")
+      type: vrl
+    extract_from: redact_pods
+- inputs:
+  - insert_at: redact_pods
+    source: '. = {"message": "2026-10-09T12:34:56.789Z rev 1234567890 from 10.0.0.1
+      v1.24.3 user@localhost MBR-1234567 pod app-5d8f9-x2x7q", "spillway": {"team":
+      "t"}}'
+    type: vrl
+  name: redact_pods leaves values that only look like PII
+  outputs:
+  - conditions:
+    - source: |
+        assert_eq!(.message, "2026-10-09T12:34:56.789Z rev 1234567890 from 10.0.0.1 v1.24.3 user@localhost MBR-1234567 pod app-5d8f9-x2x7q")
+      type: vrl
+    extract_from: redact_pods
+- inputs:
+  - insert_at: redact_feed
+    source: '. = {"message": "contact: jo.doe@example.com", "detail": {"note": "jo.doe@example.com"},
+      "spillway": {"team": "t", "event_id": "jo.doe@example.com"}}'
+    type: vrl
+  name: redact_feed masks email
+  outputs:
+  - conditions:
+    - source: |
+        assert!(!contains(string!(.message), "jo.doe@example.com"), message: string!(.message))
+        assert!(!contains(string!(.detail.note), "jo.doe@example.com"), message: string!(.detail.note))
+        assert!(starts_with(string!(.message), "contact: "))
+        assert_eq!(.spillway.event_id, "jo.doe@example.com")
+      type: vrl
+    extract_from: redact_feed
+- inputs:
+  - insert_at: redact_feed
+    source: '. = {"message": "contact: MBR-12345678", "detail": {"note": "MBR-12345678"},
+      "spillway": {"team": "t", "event_id": "MBR-12345678"}}'
+    type: vrl
+  name: redact_feed masks memberId
+  outputs:
+  - conditions:
+    - source: |
+        assert!(!contains(string!(.message), "MBR-12345678"), message: string!(.message))
+        assert!(!contains(string!(.detail.note), "MBR-12345678"), message: string!(.detail.note))
+        assert!(starts_with(string!(.message), "contact: "))
+        assert_eq!(.spillway.event_id, "MBR-12345678")
+      type: vrl
+    extract_from: redact_feed
+- inputs:
+  - insert_at: redact_feed
+    source: '. = {"message": "contact: (555) 867-5309", "detail": {"note": "(555)
+      867-5309"}, "spillway": {"team": "t", "event_id": "(555) 867-5309"}}'
+    type: vrl
+  name: redact_feed masks phone
+  outputs:
+  - conditions:
+    - source: |
+        assert!(!contains(string!(.message), "(555) 867-5309"), message: string!(.message))
+        assert!(!contains(string!(.detail.note), "(555) 867-5309"), message: string!(.detail.note))
+        assert!(starts_with(string!(.message), "contact: "))
+        assert_eq!(.spillway.event_id, "(555) 867-5309")
+      type: vrl
+    extract_from: redact_feed
+- inputs:
+  - insert_at: redact_feed
+    source: '. = {"message": "contact: 123-45-6789", "detail": {"note": "123-45-6789"},
+      "spillway": {"team": "t", "event_id": "123-45-6789"}}'
+    type: vrl
+  name: redact_feed masks ssn
+  outputs:
+  - conditions:
+    - source: |
+        assert!(!contains(string!(.message), "123-45-6789"), message: string!(.message))
+        assert!(!contains(string!(.detail.note), "123-45-6789"), message: string!(.detail.note))
+        assert!(starts_with(string!(.message), "contact: "))
+        assert_eq!(.spillway.event_id, "123-45-6789")
+      type: vrl
+    extract_from: redact_feed
+- inputs:
+  - insert_at: redact_feed
+    source: '. = {"message": "2026-10-09T12:34:56.789Z rev 1234567890 from 10.0.0.1
+      v1.24.3 user@localhost MBR-1234567 pod app-5d8f9-x2x7q", "spillway": {"team":
+      "t"}}'
+    type: vrl
+  name: redact_feed leaves values that only look like PII
+  outputs:
+  - conditions:
+    - source: |
+        assert_eq!(.message, "2026-10-09T12:34:56.789Z rev 1234567890 from 10.0.0.1 v1.24.3 user@localhost MBR-1234567 pod app-5d8f9-x2x7q")
+      type: vrl
+    extract_from: redact_feed
+- inputs:
   - insert_at: stamp
     source: '. = {"source_type": "kafka", "spillway": {"event_id": "e1", "produced_at":
       "2026-01-01T00:00:00.123456789Z", "feeder": "wikimedia"}}'

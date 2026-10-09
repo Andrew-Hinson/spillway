@@ -11,6 +11,7 @@ import (
 	"sigs.k8s.io/yaml"
 
 	spillwayv1alpha1 "github.com/Andrew-Hinson/spillway/api/v1alpha1"
+	"github.com/Andrew-Hinson/spillway/internal/redact"
 )
 
 // Regenerate the golden files with: go test ./internal/render -update
@@ -248,7 +249,7 @@ func TestClaimedDataLeavesThePlatformPath(t *testing.T) {
 			t.Errorf("platform source %q still rendered with the feeder topic claimed", id)
 		}
 	}
-	for _, id := range []string{"stamp", "latency_metrics"} {
+	for _, id := range []string{"redact_feed", "stamp", "latency_metrics"} {
 		if _, ok := c["transforms"][id]; ok {
 			t.Errorf("platform transform %q still rendered with the feeder topic claimed", id)
 		}
@@ -259,4 +260,52 @@ func TestClaimedDataLeavesThePlatformPath(t *testing.T) {
 	if _, ok := c["transforms"]["unclaimed_pods"]; ok {
 		t.Error("unclaimed_pods rendered although no namespace is claimed")
 	}
+}
+
+func TestRedactionIsOnByDefault(t *testing.T) {
+	base := loadExamples(t)["minimal"]
+	redactVRL := func(r *spillwayv1alpha1.Redaction) (string, bool) {
+		t.Helper()
+		p := *base.DeepCopy()
+		p.Spec.Redaction = r
+		out, err := Render([]spillwayv1alpha1.LogPipeline{p}, DefaultOptions())
+		if err != nil {
+			t.Fatal(err)
+		}
+		var c struct{ Transforms map[string]map[string]any }
+		if err := yaml.Unmarshal(out, &c); err != nil {
+			t.Fatal(err)
+		}
+		// The platform paths mask every pattern whatever the team chooses.
+		for _, id := range []string{"redact_feed", "redact_pods"} {
+			if c.Transforms[id]["source"] != mustVRL(t, redact.All()) {
+				t.Errorf("platform transform %s doesn't mask every pattern", id)
+			}
+		}
+		src, ok := c.Transforms[p.Spec.Team+"_redact"]["source"].(string)
+		return src, ok
+	}
+
+	all := mustVRL(t, redact.All())
+	for name, r := range map[string]*spillwayv1alpha1.Redaction{"omitted": nil, "empty": {}} {
+		if got, ok := redactVRL(r); !ok || got != all {
+			t.Errorf("redaction %s: got %q, want every pattern", name, got)
+		}
+	}
+	ssn := []spillwayv1alpha1.RedactionPattern{spillwayv1alpha1.RedactSSN}
+	if got, _ := redactVRL(&spillwayv1alpha1.Redaction{Patterns: ssn}); got != mustVRL(t, ssn) {
+		t.Errorf("listed patterns: got %q, want only ssn", got)
+	}
+	if got, ok := redactVRL(&spillwayv1alpha1.Redaction{Disabled: true}); ok {
+		t.Errorf("disabled: still rendered a redact transform: %q", got)
+	}
+}
+
+func mustVRL(t *testing.T, patterns []spillwayv1alpha1.RedactionPattern) string {
+	t.Helper()
+	vrl, err := redact.VRL(patterns)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return vrl
 }

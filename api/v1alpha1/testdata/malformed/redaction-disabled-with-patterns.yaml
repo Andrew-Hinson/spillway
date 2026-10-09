@@ -1,0 +1,11 @@
+# want: patterns can't be set when redaction is disabled
+apiVersion: spillway.dev/v1alpha1
+kind: LogPipeline
+metadata:
+  name: redaction-disabled-with-patterns
+spec:
+  team: search
+  sources:
+    - name: pods
+      kubernetes: {namespaces: [search]}
+  redaction: {disabled: true, patterns: [ssn]}
