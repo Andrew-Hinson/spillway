@@ -44,6 +44,7 @@ sinks:
     endpoint: http://loki.observability.svc:3100
     inputs:
     - content_hot
+    - edits_hot
     - payments_hot
     - search_hot
     labels:
@@ -118,6 +119,22 @@ sources:
     topics:
     - wikimedia.recentchange
     type: kafka
+  edits_src_recentchange:
+    auto_offset_reset: latest
+    bootstrap_servers: spillway-kafka-bootstrap.kafka.svc:9092
+    decoding:
+      codec: json
+    group_id: spillway-edits-recentchange
+    headers_key: ""
+    key_field: ""
+    metrics:
+      topic_lag_metric: true
+    offset_key: ""
+    partition_key: ""
+    topic_key: ""
+    topics:
+    - wikimedia.recentchange
+    type: kafka
   internal_metrics:
     scrape_interval_secs: 15
     type: internal_metrics
@@ -147,6 +164,42 @@ transforms:
       del(.source_type)
       .spillway.team = "content"
       .spillway.source = "wikimedia"
+    type: remap
+  edits_budget:
+    inputs:
+    - edits_sample
+    threshold: 25
+    type: throttle
+    window_secs: 1
+  edits_hot:
+    inputs:
+    - edits_budget
+    source: |
+      sink_at = now()
+      .spillway.sink_at = sink_at
+      produced_at, err = parse_timestamp(.spillway.produced_at, "%+")
+      if err == null {
+        .spillway.pipeline_latency_ms = to_unix_timestamp(sink_at, unit: "milliseconds") -
+          to_unix_timestamp(produced_at, unit: "milliseconds")
+      }
+    type: remap
+  edits_in_recentchange:
+    inputs:
+    - edits_src_recentchange
+    source: |
+      del(.source_type)
+      .spillway.team = "edits"
+      .spillway.source = "recentchange"
+    type: remap
+  edits_sample:
+    drop_on_abort: true
+    inputs:
+    - edits_in_recentchange
+    source: |
+      keep = {"categorize": 0, "log": 10}
+      level = downcase(to_string(get(., ["type"]) ?? null) ?? "")
+      percent = int(get(keep, [level]) ?? null) ?? 100
+      if random_int(0, 100) >= percent { abort }
     type: remap
   payments_budget:
     inputs:
@@ -258,6 +311,7 @@ transforms:
     condition: exists(.spillway.pipeline_latency_ms)
     inputs:
     - content_hot
+    - edits_hot
     - payments_hot
     - search_hot
     type: filter

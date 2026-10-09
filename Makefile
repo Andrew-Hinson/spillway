@@ -212,6 +212,10 @@ baseline: $(KUBECTL) ## Print volume and latency over the last WINDOW (default 1
 		trap 'kill $$pf' EXIT; sleep 2; \
 		python3 bench/baseline.py --window $(or $(WINDOW),15m)
 
+.PHONY: m2-gate
+m2-gate: $(KUBECTL) spillwayctl ## Run the M2 gate demo against a fresh `make up` (see docs/results/m2-gate.md)
+	bench/m2_gate.sh
+
 .PHONY: test
 test: $(SETUP_ENVTEST) $(VECTOR) ## Run Go unit tests, including CRD validation against a local API server
 	KUBEBUILDER_ASSETS="$$($(SETUP_ENVTEST) use $(ENVTEST_K8S_VERSION) --bin-dir $(BIN)/envtest -p path)" \
