@@ -1,0 +1,21 @@
+# Edits: the Wikimedia edit stream, hot only, so it runs before cold storage
+# exists. Wikimedia events have no log level, so the event type stands in for
+# one: categorize events are dropped, log events thinned to 10%, and the hot
+# path is capped at 25 events/s.
+apiVersion: spillway.dev/v1alpha1
+kind: LogPipeline
+metadata:
+  name: edits
+spec:
+  team: edits
+  sources:
+    - name: recentchange
+      kafka:
+        topic: wikimedia.recentchange
+  sampling:
+    levelField: type
+    keepPercent:
+      categorize: 0
+      log: 10
+  budget:
+    maxEventsPerSec: 25

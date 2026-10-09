@@ -6,7 +6,12 @@ Spillway is a Kubernetes log platform that will turn a short YAML spec per team 
 
 **M1 (real traffic, end to end) is built.** Live Wikimedia edits and the cluster's own pod logs flow through Kafka and Vector into Loki and can be queried in Grafana, and a baseline has been recorded.
 
-**M2 (the operator) is under way.** Applying a `LogPipeline` now changes what runs. The operator renders every pipeline into the aggregator's config, checks it with `vector validate`, rolls the aggregator, and marks each pipeline Ready, or Invalid with the reason. Malformed specs are rejected at apply time, and config Vector would reject never reaches the aggregator. Config changes go out as canaries: new config runs on one aggregator first, and is promoted only if its error rate and delivery hold, or rolled back otherwise ([ADR 0002](docs/adr/0002-canary-rollout-with-statefulset-partition.md)). `spillwayctl` runs the same checks without a cluster, plus generated `vector test` unit tests. That completes M2's scope; next is M3, policy features. Policy features and benchmarks (M3–M4) haven't started. See the [build plan](docs/plan.md).
+**M2 (the operator) is complete.** Applying a `LogPipeline` changes what runs:
+- **Checked:** the operator renders every pipeline into the aggregator's config and checks it with `vector validate`.
+- **Canaried:** new config goes to one aggregator first, and is promoted only if its error rate and delivery hold.
+- **Reported:** each pipeline is marked Ready, or Invalid or CanaryFailed with the reason.
+
+The [M2 gate run](docs/results/m2-gate.md) shows a team's first event queryable 5 s after `kubectl apply`, and three of three bad configs blocked: one at apply time, one Invalid, and one rolled back by the canary. Config changes go out as canaries ([ADR 0002](docs/adr/0002-canary-rollout-with-statefulset-partition.md)), and `spillwayctl` runs the same checks without a cluster. Next is M3, policy features. See the [build plan](docs/plan.md).
 
 ## Architecture
 
@@ -37,6 +42,8 @@ make down          # delete the cluster; nothing is left behind
 The cluster's kubeconfig is written to `./.kubeconfig`, so your `~/.kube/config` is never touched. If you use [mise](https://mise.jdx.dev), the repo's [`mise.toml`](mise.toml) sets Go, `PATH` and `KUBECONFIG` for you.
 
 In Grafana's Explore view, try `{feeder="wikimedia"}` for edits or `{namespace="kafka"}` for pod logs.
+
+To onboard a team, `kubectl apply -f examples/edits.yaml` (export `KUBECONFIG` first, as above). Within seconds, `{team="edits"}` shows the Wikimedia stream with its sampling and budget applied, and `kubectl get lp` tracks it through the canary to Ready, about 2 minutes later.
 
 ## LogPipeline
 

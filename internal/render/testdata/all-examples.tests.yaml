@@ -54,6 +54,88 @@ tests:
       type: vrl
     extract_from: content_hot
 - inputs:
+  - insert_at: edits_in_recentchange
+    source: '. = {"title": "x", "source_type": "kafka", "spillway": {"event_id": "e1",
+      "feeder": "wikimedia"}}'
+    type: vrl
+  name: edits_in_recentchange tags events with team and source
+  outputs:
+  - conditions:
+    - source: |
+        assert_eq!(.spillway.team, "edits")
+        assert_eq!(.spillway.source, "recentchange")
+        assert_eq!(.spillway.event_id, "e1")
+        assert_eq!(.title, "x")
+        assert!(!exists(.source_type))
+      type: vrl
+    extract_from: edits_in_recentchange
+- inputs:
+  - insert_at: edits_sample
+    source: '. = set!(value: {"message": "m"}, path: ["type"], data: "CATEGORIZE")'
+    type: vrl
+  name: edits_sample drops every categorize event (0%)
+  no_outputs_from:
+  - edits_sample
+- inputs:
+  - insert_at: edits_sample
+    source: '. = set!(value: {"message": "m"}, path: ["type"], data: "UNLISTED")'
+    type: vrl
+  name: edits_sample keeps levels it doesn't list
+  outputs:
+  - conditions:
+    - source: |
+        assert_eq!(.message, "m")
+      type: vrl
+    extract_from: edits_sample
+- inputs:
+  - insert_at: edits_sample
+    source: '. = {"message": "m"}'
+    type: vrl
+  name: edits_sample keeps events without a level
+  outputs:
+  - conditions:
+    - source: |
+        assert_eq!(.message, "m")
+      type: vrl
+    extract_from: edits_sample
+- inputs:
+  - insert_at: edits_budget
+    source: '. = {"message": "m"}'
+    type: vrl
+  name: edits_budget passes events within budget
+  outputs:
+  - conditions:
+    - source: |
+        assert_eq!(.message, "m")
+      type: vrl
+    extract_from: edits_budget
+- inputs:
+  - insert_at: edits_hot
+    source: '. = {"source_type": "kafka", "spillway": {"event_id": "e1", "produced_at":
+      "2026-01-01T00:00:00.123456789Z", "feeder": "wikimedia"}}'
+    type: vrl
+  name: edits_hot stamps sink time and pipeline latency
+  outputs:
+  - conditions:
+    - source: |
+        assert!(is_timestamp(.spillway.sink_at))
+        assert!(int!(.spillway.pipeline_latency_ms) > 0)
+        assert_eq!(.spillway.event_id, "e1")
+      type: vrl
+    extract_from: edits_hot
+- inputs:
+  - insert_at: edits_hot
+    source: '. = {"message": "m"}'
+    type: vrl
+  name: edits_hot tolerates events without a produce timestamp
+  outputs:
+  - conditions:
+    - source: |
+        assert!(is_timestamp(.spillway.sink_at))
+        assert!(!exists(.spillway.pipeline_latency_ms))
+      type: vrl
+    extract_from: edits_hot
+- inputs:
   - insert_at: payments_src_services
     source: '. = {"message": "hello", "stream": "stdout", "kubernetes": {"pod_namespace":
       "payments", "pod_name": "app-0", "container_name": "app", "pod_node_name": "node-1",
