@@ -6,6 +6,10 @@ role: Aggregator
 # Two replicas, so new config can run on one (the canary) while the other
 # keeps the last good config. See docs/adr/0002.
 replicas: 2
+# Voluntary disruptions (node drains) take at most one aggregator at a time.
+podDisruptionBudget:
+  enabled: true
+  minAvailable: 1
 
 # Each pod loads the config file its pod template's spillway.dev/config-suffix
 # annotation names (vector<suffix>.yaml); without it, the bootstrap

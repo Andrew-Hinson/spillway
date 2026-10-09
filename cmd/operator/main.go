@@ -39,9 +39,10 @@ func main() {
 	flag.StringVar(&vector.Bin, "vector-bin", "/usr/local/bin/vector", "vector binary used to validate rendered config (same version as the aggregator)")
 	flag.DurationVar(&vector.Timeout, "validation-timeout", 30*time.Second, "how long `vector validate` may take")
 	// Canary rollouts (docs/adr/0002-canary-rollout-with-statefulset-partition.md).
-	flag.DurationVar(&rec.Canary.Bake, "canary-bake", 2*time.Minute, "how long new config runs on the canary pod, once Ready, before it's promoted")
+	flag.DurationVar(&rec.Canary.Bake, "canary-bake", 2*time.Minute, "how long new config runs on the canary pod, once Ready, before it's promoted (at least twice the config's longest sink batch timeout)")
 	flag.DurationVar(&rec.Canary.ReadyTimeout, "canary-ready-timeout", 3*time.Minute, "how long the canary pod may take to become Ready before the config is rolled back")
-	flag.Float64Var(&rec.Canary.ErrorAllowance, "canary-error-allowance", 5, "how many more errors than a stable pod the canary may log during the bake")
+	flag.Float64Var(&rec.Canary.ErrorAllowance, "canary-error-allowance", 5, "the canary may log this many more errors than a stable pod during the bake...")
+	flag.Float64Var(&rec.Canary.ErrorRatio, "canary-error-ratio", 0.001, "...or this share of the events its sinks took in, whichever is larger")
 	metricsPort := flag.Int("aggregator-metrics-port", 9598, "port of the aggregator's Prometheus exporter, read to judge the canary")
 	flag.StringVar(&rec.Namespace, "aggregator-namespace", "vector", "namespace of the Vector aggregator")
 	flag.StringVar(&rec.StatefulSet, "aggregator-statefulset", "vector-aggregator", "the aggregator's StatefulSet")

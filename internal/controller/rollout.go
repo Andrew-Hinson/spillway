@@ -12,11 +12,15 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
 	appsv1 "k8s.io/api/apps/v1"
+	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/types"
+	"sigs.k8s.io/yaml"
 
 	spillwayv1alpha1 "github.com/Andrew-Hinson/spillway/api/v1alpha1"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -59,6 +63,9 @@ const (
 type quarantined struct {
 	Generation int64  `json:"generation"`
 	Reason     string `json:"reason"`
+	// Retry marks a change that failed in a canary together with others, so
+	// it's not known to be at fault: it's retried in a canary of its own.
+	Retry bool `json:"retry,omitempty"`
 }
 
 // configKey is the ConfigMap key for a config revision.
@@ -70,17 +77,25 @@ type CanarySettings struct {
 	Bake time.Duration
 	// ReadyTimeout is how long the canary pod may take to become Ready.
 	ReadyTimeout time.Duration
-	// ErrorAllowance is how many more errors than the stable pod the canary
-	// may log during the bake.
+	// The canary may log more errors than the stable pod during the bake,
+	// up to the larger of ErrorAllowance and ErrorRatio times the events its
+	// sinks took in, so the allowance scales with traffic.
 	ErrorAllowance float64
+	ErrorRatio     float64
 }
 
-var rollouts = prometheus.NewCounterVec(prometheus.CounterOpts{
-	Name: "spillway_operator_rollouts_total",
-	Help: "Aggregator config canaries, by result (promoted or rolled_back).",
-}, []string{"result"})
+var (
+	rollouts = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "spillway_operator_rollouts_total",
+		Help: "Aggregator config canaries, by result (promoted or rolled_back).",
+	}, []string{"result"})
+	orphanedBuffers = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "spillway_operator_orphaned_buffers_total",
+		Help: "Rollbacks that left a sink's disk buffer on the canary pod with nothing to read it (issue #43).",
+	}, []string{"sink"})
+)
 
-func init() { metrics.Registry.MustRegister(rollouts) }
+func init() { metrics.Registry.MustRegister(rollouts, orphanedBuffers) }
 
 type phase int
 
@@ -100,14 +115,54 @@ type rolloutState struct {
 }
 
 type baseline struct {
-	At     time.Time `json:"at"`
-	Canary PodHealth `json:"canary"`
-	Stable PodHealth `json:"stable"`
+	At time.Time `json:"at"`
+	// Bake is the bake this canary gets, fixed when it starts.
+	Bake   time.Duration `json:"bake"`
+	Canary PodHealth     `json:"canary"`
+	Stable PodHealth     `json:"stable"`
+}
+
+// bakeFor returns how long to bake cfg: the configured bake, but at least
+// twice the longest sink batch timeout, so a sink that batches gets to send
+// at least once before a stall can be judged.
+func (r *AggregatorReconciler) bakeFor(cfg []byte) time.Duration {
+	var c struct {
+		Sinks map[string]struct {
+			Batch struct {
+				TimeoutSecs float64 `json:"timeout_secs"`
+			} `json:"batch"`
+		} `json:"sinks"`
+	}
+	_ = yaml.Unmarshal(cfg, &c)
+	longest := 0.0
+	for _, sink := range c.Sinks {
+		longest = max(longest, sink.Batch.TimeoutSecs)
+	}
+	return max(r.Canary.Bake, time.Duration(2*longest*float64(time.Second)))
+}
+
+// diskBufferedSinks returns the sinks in cfg with a disk buffer.
+func diskBufferedSinks(cfg string) map[string]bool {
+	var c struct {
+		Sinks map[string]struct {
+			Buffer struct {
+				Type string `json:"type"`
+			} `json:"buffer"`
+		} `json:"sinks"`
+	}
+	_ = yaml.Unmarshal([]byte(cfg), &c)
+	out := map[string]bool{}
+	for id, sink := range c.Sinks {
+		if sink.Buffer.Type == "disk" {
+			out[id] = true
+		}
+	}
+	return out
 }
 
 // rollout moves the aggregator towards running the config with hash, which
 // renders pipelines.
-func (r *AggregatorReconciler) rollout(ctx context.Context, sts *appsv1.StatefulSet, hash string, pipelines []spillwayv1alpha1.LogPipeline) (rolloutState, ctrl.Result, error) {
+func (r *AggregatorReconciler) rollout(ctx context.Context, sts *appsv1.StatefulSet, hash string, cfg []byte, pipelines []spillwayv1alpha1.LogPipeline) (rolloutState, ctrl.Result, error) {
 	fp := make(map[string]int64, len(pipelines))
 	for _, p := range pipelines {
 		fp[string(p.UID)] = p.Generation
@@ -122,7 +177,7 @@ func (r *AggregatorReconciler) rollout(ctx context.Context, sts *appsv1.Stateful
 
 	switch {
 	case canary != "" && canary == hash:
-		return r.evaluateCanary(ctx, sts, st)
+		return r.evaluateCanary(ctx, sts, st, r.bakeFor(cfg))
 
 	case hash == stable && current != hash:
 		// Back to the known-good config (a spec reverted mid-canary): no canary needed.
@@ -158,8 +213,17 @@ func (r *AggregatorReconciler) rollout(ctx context.Context, sts *appsv1.Stateful
 		if stable != hash {
 			b, _ := json.Marshal(fp)
 			fps := string(b)
+			// Retried changes that are now stable have passed: release them.
+			q := quarantineOf(sts)
+			for uid, e := range q {
+				if fp[uid] == e.Generation {
+					delete(q, uid)
+				}
+			}
+			qb, _ := json.Marshal(q)
+			qs := string(qb)
 			patch := client.MergeFrom(sts.DeepCopy())
-			setAnnotations(&sts.Annotations, map[string]*string{annStable: &hash, annStablePipelines: &fps, annRejected: nil, annRejectedReason: nil})
+			setAnnotations(&sts.Annotations, map[string]*string{annStable: &hash, annStablePipelines: &fps, annRejected: nil, annRejectedReason: nil, annQuarantine: &qs})
 			if err := r.Patch(ctx, sts, patch); err != nil {
 				return st, ctrl.Result{}, err
 			}
@@ -172,7 +236,7 @@ func (r *AggregatorReconciler) rollout(ctx context.Context, sts *appsv1.Stateful
 
 // evaluateCanary waits for the canary pod, bakes it, and promotes or rolls
 // back.
-func (r *AggregatorReconciler) evaluateCanary(ctx context.Context, sts *appsv1.StatefulSet, st rolloutState) (rolloutState, ctrl.Result, error) {
+func (r *AggregatorReconciler) evaluateCanary(ctx context.Context, sts *appsv1.StatefulSet, st rolloutState, bake time.Duration) (rolloutState, ctrl.Result, error) {
 	ann := sts.Annotations
 	hash := ann[annCanary]
 	replicas := replicasOf(sts)
@@ -209,7 +273,7 @@ func (r *AggregatorReconciler) evaluateCanary(ctx context.Context, sts *appsv1.S
 
 	var b baseline
 	if err := json.Unmarshal([]byte(ann[annCanaryBaseline]), &b); err != nil || b.At.IsZero() {
-		b = baseline{At: r.now().UTC(), Canary: c, Stable: s}
+		b = baseline{At: r.now().UTC(), Bake: bake, Canary: c, Stable: s}
 		raw, _ := json.Marshal(b)
 		v := string(raw)
 		patch := client.MergeFrom(sts.DeepCopy())
@@ -217,8 +281,11 @@ func (r *AggregatorReconciler) evaluateCanary(ctx context.Context, sts *appsv1.S
 		if err := r.Patch(ctx, sts, patch); err != nil {
 			return st, ctrl.Result{}, err
 		}
-		st.message = r.bakingMessage(hash, canaryPod, replicas, b.At)
-		return st, ctrl.Result{RequeueAfter: r.Canary.Bake}, nil
+		st.message = bakingMessage(hash, canaryPod, replicas, b)
+		return st, ctrl.Result{RequeueAfter: min(b.Bake, 15*time.Second)}, nil
+	}
+	if b.Bake == 0 {
+		b.Bake = bake // a baseline from before bakes were recorded
 	}
 
 	// Judge as soon as the canary misbehaves; promote only after the full bake.
@@ -226,15 +293,20 @@ func (r *AggregatorReconciler) evaluateCanary(ctx context.Context, sts *appsv1.S
 		return r.rollback(ctx, sts, st, fmt.Sprintf("canary pod %s restarted %d times", canaryPod, c.Restarts-b.Canary.Restarts))
 	}
 	canaryErrors, stableErrors := c.Errors-b.Canary.Errors, s.Errors-b.Stable.Errors
-	if canaryErrors-stableErrors > r.Canary.ErrorAllowance {
+	events := 0.0
+	for id, now := range c.Sinks {
+		events += now.Received - b.Canary.Sinks[id].Received
+	}
+	allowance := max(r.Canary.ErrorAllowance, r.Canary.ErrorRatio*events)
+	if canaryErrors-stableErrors > allowance {
 		reason := fmt.Sprintf("canary pod %s logged %.0f errors in %s", canaryPod, canaryErrors, r.now().Sub(b.At).Round(time.Second))
 		if stablePod != "" {
 			reason += fmt.Sprintf(" against %.0f on stable pod %s", stableErrors, stablePod)
 		}
-		return r.rollback(ctx, sts, st, reason)
+		return r.rollback(ctx, sts, st, fmt.Sprintf("%s (allowed: %.0f more, for %.0f events)", reason, allowance, events))
 	}
-	if left := b.At.Add(r.Canary.Bake).Sub(r.now()); left > 0 {
-		st.message = r.bakingMessage(hash, canaryPod, replicas, b.At)
+	if left := b.At.Add(b.Bake).Sub(r.now()); left > 0 {
+		st.message = bakingMessage(hash, canaryPod, replicas, b)
 		return st, ctrl.Result{RequeueAfter: min(left+time.Second, 15*time.Second)}, nil
 	}
 	// Judged only at the end: a sink may batch for up to a minute before it
@@ -250,9 +322,9 @@ func (r *AggregatorReconciler) evaluateCanary(ctx context.Context, sts *appsv1.S
 		phaseRolling, fmt.Sprintf("config %s passed its canary and is rolling to every aggregator", hash))
 }
 
-func (r *AggregatorReconciler) bakingMessage(hash, pod string, replicas int32, from time.Time) string {
+func bakingMessage(hash, pod string, replicas int32, b baseline) string {
 	return fmt.Sprintf("canary: config %s is running on %s (1 of %d aggregators); promoting at %s if its error rate holds",
-		hash, pod, replicas, from.Add(r.Canary.Bake).UTC().Format(time.RFC3339))
+		hash, pod, replicas, b.At.Add(b.Bake).UTC().Format(time.RFC3339))
 }
 
 // rollback returns the canary pod to the stable config. The pipeline
@@ -267,24 +339,61 @@ func (r *AggregatorReconciler) rollback(ctx context.Context, sts *appsv1.Statefu
 
 	var canaryFP map[string]int64
 	_ = json.Unmarshal([]byte(sts.Annotations[annCanaryPipelines]), &canaryFP)
-	q := quarantineOf(sts)
-	suspects := 0
+	var suspects []string
 	for uid, gen := range canaryFP {
 		if stableGen, ok := st.stable[uid]; !ok || stableGen != gen {
-			q[uid] = quarantined{Generation: gen, Reason: fmt.Sprintf("config %s was rolled back: %s", hash, reason)}
-			suspects++
+			suspects = append(suspects, uid)
 		}
 	}
+	// With one change, it's at fault. With several, none is known to be:
+	// each is retried in a canary of its own, and only those that fail alone
+	// stay quarantined.
+	q := quarantineOf(sts)
+	for _, uid := range suspects {
+		q[uid] = quarantined{Generation: canaryFP[uid], Reason: fmt.Sprintf("config %s was rolled back: %s", hash, reason), Retry: len(suspects) > 1}
+	}
+	orphans := r.orphanedBuffers(ctx, hash, sts.Annotations[annStable], fmt.Sprintf("%s-%d", sts.Name, replicasOf(sts)-1))
 	raw, _ := json.Marshal(q)
 	qs := string(raw)
 	annotations := map[string]*string{annCanary: nil, annCanaryStarted: nil, annCanaryBaseline: nil, annCanaryPipelines: nil,
 		annQuarantine: &qs, annRejectedReason: &reason}
-	if suspects == 0 {
+	if len(suspects) == 0 {
 		annotations[annRejected] = &hash
 	}
 	st, res, err := r.patchRollout(ctx, sts, st, sts.Annotations[annStable], 0, annotations, phaseRejected, "")
 	st.message = fmt.Sprintf("config %s was rolled back: %s. The aggregator runs the previous config", hash, reason)
+	if len(orphans) > 0 {
+		st.message += fmt.Sprintf("; events %s buffered on the canary pod weren't delivered (issue #43)", strings.Join(orphans, ", "))
+	}
 	return st, res, err
+}
+
+// orphanedBuffers reports the disk-buffered sinks the rolled-back config
+// added: the stable config has no such sink, so whatever the canary pod
+// buffered in them is never read (issue #43). It logs and counts them.
+func (r *AggregatorReconciler) orphanedBuffers(ctx context.Context, canary, stable, pod string) []string {
+	var cm corev1.ConfigMap
+	if err := r.Get(ctx, types.NamespacedName{Namespace: r.Namespace, Name: r.ConfigMap}, &cm); err != nil {
+		return nil
+	}
+	stableKey := BootstrapKey
+	if stable != "" {
+		stableKey = configKey(stable)
+	}
+	before := diskBufferedSinks(cm.Data[stableKey])
+	var out []string
+	for id := range diskBufferedSinks(cm.Data[configKey(canary)]) {
+		if !before[id] {
+			out = append(out, id)
+		}
+	}
+	sort.Strings(out)
+	for _, id := range out {
+		orphanedBuffers.WithLabelValues(id).Inc()
+		log.FromContext(ctx).Info("WARNING: rollback leaves a disk buffer nothing reads; its events weren't delivered (issue #43)",
+			"pod", pod, "sink", id, "config", canary)
+	}
+	return out
 }
 
 // quarantineOf reads the quarantined pipeline generations.

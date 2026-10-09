@@ -8,9 +8,12 @@ package controller
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -109,16 +112,19 @@ func (f *fakeHealth) Check(_ context.Context, _, pod string) (PodHealth, error) 
 	return f.pods[pod], nil
 }
 
-var canary = CanarySettings{Bake: 2 * time.Minute, ReadyTimeout: 3 * time.Minute, ErrorAllowance: 5}
+var canary = CanarySettings{Bake: 2 * time.Minute, ReadyTimeout: 3 * time.Minute, ErrorAllowance: 5, ErrorRatio: 0.001}
 
 // newEnv creates the test's namespace and reconciler, and an aggregator
 // StatefulSet unless withAggregator is false. selects controls whether the
 // aggregator's container selects its config file from the suffix annotation.
 func newEnv(t *testing.T, withAggregator, selects bool) *env {
 	t.Helper()
-	ns := strings.ToLower(strings.ReplaceAll(t.Name(), "_", "-"))
+	// A namespace per test, named after it: lowercase, [a-z0-9-] only, and
+	// short enough, with a hash of the full name to keep it unique.
+	ns := strings.Trim(regexp.MustCompile(`[^a-z0-9]+`).ReplaceAllString(strings.ToLower(t.Name()), "-"), "-")
 	if len(ns) > 50 {
-		ns = ns[:50]
+		sum := sha256.Sum256([]byte(t.Name()))
+		ns = strings.Trim(ns[:41], "-") + "-" + hex.EncodeToString(sum[:4])
 	}
 	ctx := context.Background()
 	must(t, k8s.Create(ctx, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: ns}}))
@@ -684,4 +690,137 @@ func TestUnchangedConfigIsValidatedOnce(t *testing.T) {
 	if e.v.calls != 1 {
 		t.Errorf("validated an unchanged config %d times, want 1", e.v.calls)
 	}
+}
+
+// withColdStorage configures cold storage, as --cold-bucket does.
+func (e *env) withColdStorage() {
+	e.r.Options.Cold = render.DefaultOptions().Cold
+}
+
+// failCanary takes the desired config through a canary that errors.
+func (e *env) failCanary() {
+	e.t.Helper()
+	e.reconcile() // canary starts
+	e.settle()
+	e.health.pods["vector-aggregator-1"] = PodHealth{}
+	e.reconcile() // baseline
+	e.health.pods["vector-aggregator-1"] = PodHealth{Errors: 50}
+	e.advance(10 * time.Second)
+	e.reconcile() // rolled back
+	e.health.pods["vector-aggregator-1"] = PodHealth{}
+	e.settle()
+}
+
+func TestBakeIsAtLeastTwiceTheLongestSinkBatch(t *testing.T) {
+	e := newEnv(t, true, true)
+	e.withColdStorage() // cold_s3 batches for 60s
+	e.r.Canary.Bake = 30 * time.Second
+	e.pipeline("archive", "archive", "archive", true)
+	e.reconcile()
+	e.settle()
+	e.reconcile() // baseline
+	e.expectReady("archive", metav1.ConditionFalse, spillwayv1alpha1.ReasonRollingOut, "promoting at 2026-10-09T12:02:00Z")
+	e.advance(time.Minute)
+	e.reconcile()
+	if partitionOf(e.sts()) != 1 {
+		t.Fatal("promoted after the configured 30s, before a 60s batch could be sent twice")
+	}
+	e.advance(time.Minute + time.Second)
+	e.reconcile()
+	if partitionOf(e.sts()) != 0 {
+		t.Fatal("not promoted after twice the longest batch timeout")
+	}
+}
+
+func TestErrorAllowanceScalesWithTraffic(t *testing.T) {
+	for _, tc := range []struct {
+		events   float64
+		promoted bool
+	}{{100000, true}, {1000, false}} {
+		t.Run(fmt.Sprintf("%.0f events", tc.events), func(t *testing.T) {
+			e := newEnv(t, true, true)
+			e.pipeline("search", "search", "search", false)
+			e.reconcile()
+			e.settle()
+			e.reconcile() // baseline
+			// 50 errors: within 0.1% of 100k events, beyond the floor of 5 for 1k.
+			e.health.pods["vector-aggregator-1"] = PodHealth{Errors: 50, Sinks: map[string]SinkCounts{"hot_loki": {Received: tc.events, Sent: tc.events}}}
+			e.advance(canary.Bake + time.Second)
+			e.reconcile()
+			if promoted := partitionOf(e.sts()) == 0 && len(quarantineOf(e.sts())) == 0; promoted != tc.promoted {
+				t.Fatalf("promoted = %v, want %v", promoted, tc.promoted)
+			}
+			if !tc.promoted {
+				e.expectReady("search", metav1.ConditionFalse, spillwayv1alpha1.ReasonCanaryFailed, "(allowed: 5 more, for 1000 events)")
+			}
+		})
+	}
+}
+
+// Changes that fail together are retried one at a time; only the one that
+// fails alone stays quarantined.
+func TestChangesThatFailTogetherAreRetriedAlone(t *testing.T) {
+	e := newEnv(t, true, true)
+	e.pipeline("search", "search", "search", false)
+	e.promote()
+	e.pipeline("beta", "beta", "beta", false)
+	e.pipeline("gamma", "gamma", "gamma", false)
+	e.failCanary()
+
+	q := quarantineOf(e.sts())
+	if len(q) != 2 {
+		t.Fatalf("quarantine = %v, want both changes", q)
+	}
+	for _, entry := range q {
+		if !entry.Retry {
+			t.Fatal("changes that failed together were quarantined without a retry")
+		}
+	}
+
+	// The next canary holds exactly one of them.
+	e.reconcile()
+	cfg := e.config()
+	first, second := "beta", "gamma"
+	if strings.Contains(cfg, "gamma_hot") {
+		first, second = "gamma", "beta"
+	}
+	if !strings.Contains(cfg, first+"_hot") || strings.Contains(cfg, second+"_hot") {
+		t.Fatal("the retry canary should hold exactly one of the changes")
+	}
+	e.expectReady(second, metav1.ConditionFalse, spillwayv1alpha1.ReasonRollingOut, "retried in a canary of its own (1 ahead of it)")
+
+	// The first passes alone and is released...
+	e.settle()
+	e.reconcile() // baseline
+	e.advance(canary.Bake + time.Second)
+	e.reconcile()
+	e.settle()
+	e.reconcile()
+	e.expectReady(first, metav1.ConditionTrue, spillwayv1alpha1.ReasonRolledOut, "")
+
+	// ...then the second gets its own canary, fails alone, and stays quarantined.
+	e.failCanary()
+	e.reconcile()
+	e.expectReady(second, metav1.ConditionFalse, spillwayv1alpha1.ReasonCanaryFailed, "Change the spec to try again")
+	e.expectReady(first, metav1.ConditionTrue, spillwayv1alpha1.ReasonRolledOut, "")
+	if strings.Contains(e.config(), second+"_hot") {
+		t.Error("the change that failed alone is still in the config")
+	}
+}
+
+func TestRollbackReportsOrphanedBuffers(t *testing.T) {
+	e := newEnv(t, true, true)
+	e.withColdStorage()
+	e.pipeline("search", "search", "search", false)
+	e.promote()
+	e.pipeline("archive", "archive", "archive", true) // adds the disk-buffered cold_s3 sink
+	e.reconcile()
+	e.settle()
+	e.reconcile()
+	e.health.pods["vector-aggregator-1"] = PodHealth{Errors: 50}
+	e.advance(10 * time.Second)
+	e.reconcile()
+	e.expectReady("archive", metav1.ConditionFalse, spillwayv1alpha1.ReasonCanaryFailed,
+		"events cold_s3 buffered on the canary pod weren't delivered (issue #43)")
+	e.expectReady("search", metav1.ConditionTrue, spillwayv1alpha1.ReasonRolledOut, "")
 }

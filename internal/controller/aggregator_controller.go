@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -84,7 +85,7 @@ func (r *AggregatorReconciler) Reconcile(ctx context.Context, _ ctrl.Request) (c
 				r.Namespace, r.StatefulSet, SuffixEnv, SuffixAnnotation))
 		return ctrl.Result{}, nil
 	}
-	accepted, failed, err := r.applyQuarantine(ctx, &sts, list.Items, accepted)
+	accepted, held, err := r.applyQuarantine(ctx, &sts, list.Items, accepted)
 	if err != nil {
 		return ctrl.Result{}, err
 	}
@@ -95,7 +96,7 @@ func (r *AggregatorReconciler) Reconcile(ctx context.Context, _ ctrl.Request) (c
 		// Not even the pipelines that pass alone combine into a config Vector
 		// accepts. Apply nothing: the aggregator keeps its last valid config.
 		logger.Info("rendered config failed validation; keeping the current config", "output", rejected.Output)
-		r.report(ctx, list.Items, invalid, failed, rolloutState{}, spillwayv1alpha1.ReasonValidationFailed,
+		r.report(ctx, list.Items, invalid, held, rolloutState{}, spillwayv1alpha1.ReasonValidationFailed,
 			"the combined config failed validation, so the aggregator keeps its last valid config: "+rejected.Error())
 		return ctrl.Result{}, nil
 	} else if err != nil {
@@ -107,22 +108,28 @@ func (r *AggregatorReconciler) Reconcile(ctx context.Context, _ ctrl.Request) (c
 	if err := r.applyConfigMap(ctx, &sts, hash, cfg); err != nil {
 		return ctrl.Result{}, err
 	}
-	st, res, err := r.rollout(ctx, &sts, hash, accepted)
+	st, res, err := r.rollout(ctx, &sts, hash, cfg, accepted)
 	if err != nil {
 		return ctrl.Result{}, err
 	}
 	logger.V(1).Info("rollout", "hash", hash, "phase", st.phase, "message", st.message)
-	r.report(ctx, list.Items, invalid, failed, st, "", st.message)
+	r.report(ctx, list.Items, invalid, held, st, "", st.message)
 	return res, nil
 }
 
+// hold is why a pipeline's current generation isn't in the config.
+type hold struct {
+	reason, message string
+}
+
 // applyQuarantine leaves quarantined pipeline generations out of accepted. A
-// quarantined pipeline with a last good spec keeps running that spec; one
-// without (it never rolled out) is left out entirely. It returns why each
-// quarantined pipeline was held back, and drops quarantine entries whose
-// pipeline has since changed or gone.
+// held pipeline with a last good spec keeps running that spec; one without
+// (it never rolled out) is left out entirely. Of the changes waiting to be
+// retried alone, the first goes into the config and the rest wait their
+// turn. It returns why each held pipeline was held, and drops quarantine
+// entries whose pipeline has since changed or gone.
 func (r *AggregatorReconciler) applyQuarantine(ctx context.Context, sts *appsv1.StatefulSet,
-	all, accepted []spillwayv1alpha1.LogPipeline) ([]spillwayv1alpha1.LogPipeline, map[types.UID]string, error) {
+	all, accepted []spillwayv1alpha1.LogPipeline) ([]spillwayv1alpha1.LogPipeline, map[types.UID]hold, error) {
 	q := quarantineOf(sts)
 	if len(q) == 0 {
 		return accepted, nil, nil
@@ -148,23 +155,43 @@ func (r *AggregatorReconciler) applyQuarantine(ctx context.Context, sts *appsv1.
 		}
 	}
 
-	failed := map[types.UID]string{}
+	// The retry under way is the first waiting change, in a stable order.
+	var waiting []string
+	for uid, e := range q {
+		if e.Retry {
+			waiting = append(waiting, uid)
+		}
+	}
+	sort.Strings(waiting)
+
+	held := map[types.UID]hold{}
 	kept := accepted[:0:0]
 	for _, p := range accepted {
-		e, held := q[string(p.UID)]
-		if !held {
+		uid := string(p.UID)
+		e, inQuarantine := q[uid]
+		if !inQuarantine || (len(waiting) > 0 && uid == waiting[0]) {
 			kept = append(kept, p)
 			continue
 		}
-		msg := fmt.Sprintf("generation %d %s", e.Generation, e.Reason)
+		var h hold
+		if e.Retry {
+			h = hold{spillwayv1alpha1.ReasonRollingOut, fmt.Sprintf(
+				"generation %d was in a canary that failed together with other changes (%s); it will be retried in a canary of its own (%d ahead of it)",
+				e.Generation, e.Reason, slices.Index(waiting, uid))}
+		} else {
+			h = hold{spillwayv1alpha1.ReasonCanaryFailed, fmt.Sprintf("generation %d %s", e.Generation, e.Reason)}
+		}
 		if last, ok := lastGoodSpec(&p); ok {
 			p.Spec, p.Generation = last.Spec, last.Generation
 			kept = append(kept, p)
-			msg += fmt.Sprintf("; generation %d keeps running", last.Generation)
+			h.message += fmt.Sprintf("; generation %d keeps running", last.Generation)
 		}
-		failed[p.UID] = msg + ". Change the spec to try again"
+		if !e.Retry {
+			h.message += ". Change the spec to try again"
+		}
+		held[p.UID] = h
 	}
-	return kept, failed, nil
+	return kept, held, nil
 }
 
 type goodSpec struct {
@@ -348,11 +375,11 @@ func (r *AggregatorReconciler) applyConfigMap(ctx context.Context, sts *appsv1.S
 }
 
 // report sets every pipeline's Ready condition. Invalid pipelines get their
-// error, and quarantined ones (failed) why their change was held back. A pipeline whose current generation runs in the stable config is
+// error, and held ones why their change isn't in the config. A pipeline whose current generation runs in the stable config is
 // Ready; the rest get the rollout's phase. A non-empty reason overrides the
 // phase (for problems with the aggregator itself).
 func (r *AggregatorReconciler) report(ctx context.Context, items []spillwayv1alpha1.LogPipeline,
-	invalid, failed map[types.UID]string, st rolloutState, reason, message string) {
+	invalid map[types.UID]string, held map[types.UID]hold, st rolloutState, reason, message string) {
 	logger := log.FromContext(ctx)
 	for i := range items {
 		p := &items[i]
@@ -364,8 +391,8 @@ func (r *AggregatorReconciler) report(ctx context.Context, items []spillwayv1alp
 		switch msg, bad := invalid[p.UID]; {
 		case bad:
 			cond.Reason, cond.Message = spillwayv1alpha1.ReasonInvalid, msg
-		case failed[p.UID] != "":
-			cond.Reason, cond.Message = spillwayv1alpha1.ReasonCanaryFailed, failed[p.UID]
+		case held[p.UID].reason != "":
+			cond.Reason, cond.Message = held[p.UID].reason, held[p.UID].message
 		case reason != "":
 		case inStable(st, p):
 			cond.Status, cond.Reason = metav1.ConditionTrue, spillwayv1alpha1.ReasonRolledOut
