@@ -155,6 +155,18 @@ wikimedia-feeder: docker-check $(KIND) $(KUBECTL) ## Build, load and deploy the 
 	$(KUBECTL) -n kafka wait kafkatopic/wikimedia.recentchange --for=condition=Ready --timeout=2m
 	$(KUBECTL) -n feeders rollout status deployment/wikimedia-feeder --timeout=3m
 
+FIXTURES_IMAGE  := spillway/fixtures
+FIXTURES_TAG     = $(shell cat go.mod go.sum $$(find feeders/fixtures -type f | sort) | sha256sum | cut -c1-12)
+
+.PHONY: fixtures
+fixtures: docker-check $(KIND) $(KUBECTL) ## Inject known fake PII into the live streams (opt-in; RATE=fixtures/s, default 1)
+	docker build -q -t $(FIXTURES_IMAGE):$(FIXTURES_TAG) -f feeders/fixtures/Dockerfile .
+	$(KIND) load docker-image $(FIXTURES_IMAGE):$(FIXTURES_TAG) --name $(CLUSTER_NAME)
+	sed -e 's|$(FIXTURES_IMAGE):dev|$(FIXTURES_IMAGE):$(FIXTURES_TAG)|' \
+		-e 's|value: "1"   # fixtures per second|value: "$(or $(RATE),1)"   # fixtures per second|' \
+		deploy/feeders/fixtures.yaml | $(KUBECTL) apply -f -
+	$(KUBECTL) -n fixtures rollout status deployment/fixture-injector --timeout=3m
+
 .PHONY: aggregator
 aggregator: $(HELM) $(KUBECTL) ## Deploy the Vector aggregator (Kafka -> Loki)
 	$(KUBECTL) create namespace vector --dry-run=client -o yaml | $(KUBECTL) apply -f -

@@ -11,7 +11,7 @@ Spillway is a Kubernetes log platform that will turn a short YAML spec per team 
 - **Canaried:** new config goes to one aggregator first, and is promoted only if its error rate and delivery hold.
 - **Reported:** each pipeline is marked Ready, or Invalid or CanaryFailed with the reason.
 
-The [M2 gate run](docs/results/m2-gate.md) shows a team's first event queryable 5 s after `kubectl apply`, and three of three bad configs blocked: one at apply time, one Invalid, and one rolled back by the canary. Config changes go out as canaries ([ADR 0002](docs/adr/0002-canary-rollout-with-statefulset-partition.md)), and `spillwayctl` runs the same checks without a cluster. Next is M3, policy features. See the [build plan](docs/plan.md).
+The [M2 gate run](docs/results/m2-gate.md) shows a team's first event queryable 5 s after `kubectl apply`, and three of three bad configs blocked: one at apply time, one Invalid, and one rolled back by the canary. Config changes go out as canaries ([ADR 0002](docs/adr/0002-canary-rollout-with-statefulset-partition.md)), and `spillwayctl` runs the same checks without a cluster. **M3 (policy features) is under way.** A fixture injector mixes known, fictional PII into the live streams, so redaction can be measured. See the [build plan](docs/plan.md).
 
 ## Architecture
 
@@ -117,6 +117,7 @@ Cold storage (MinIO) arrives in M3. Until then, pipelines that route to cold sto
 | `make lint` | golangci-lint |
 | `make vector-check` | `vector validate` and the generated `vector test` suite on the aggregator config and every rendered example, plus `vector validate` on the agent config |
 | `make baseline` | Volume and latency over the last 15 minutes, as Markdown |
+| `make fixtures` | Inject known, fictional PII into the live streams (`RATE=` per second, default 1): recentchange-shaped events into the Wikimedia topic, and JSON log lines in the `fixtures` namespace. Each is tagged `spillway.fixture: {id, pattern}`, so it can be counted in any sink. Opt-in, because the M1 platform path doesn't redact |
 | `make help` | Every target |
 
 CI runs `lint`, `generate`, `test` and `vector-check` on every PR.
@@ -144,6 +145,7 @@ internal/validate/   vector validate gate for rendered config
 internal/schema/     offline CRD schema validation (same libraries as the API server)
 examples/            example LogPipeline specs
 feeders/wikimedia/   Go SSE → Kafka feeder
+feeders/fixtures/    fictional-PII fixture injector (Kafka and pod logs)
 vector/              agent and aggregator configs, Helm values, unit tests
 deploy/              kind cluster, platform Helm values, feeder and operator manifests (generated CRD and RBAC)
 dashboards/          Grafana dashboards
