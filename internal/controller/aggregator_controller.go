@@ -5,9 +5,11 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"sort"
+	"strings"
 	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
@@ -29,14 +31,6 @@ import (
 	"github.com/Andrew-Hinson/spillway/internal/validate"
 )
 
-const (
-	// ConfigKey is the file name of the rendered config in the ConfigMap.
-	ConfigKey = "vector.yaml"
-	// HashAnnotation on the aggregator's pod template carries the hash of the
-	// config it should run; changing it rolls the pods.
-	HashAnnotation = "spillway.dev/config-hash"
-)
-
 // AggregatorReconciler renders every LogPipeline into one aggregator config,
 // applies it, rolls the aggregator, and reports each pipeline's status.
 //
@@ -47,6 +41,11 @@ type AggregatorReconciler struct {
 	Options render.Options
 	// Validator checks rendered config before it's applied.
 	Validator validate.Validator
+	// Health reads aggregator pods' health for the canary; Canary tunes it.
+	Health HealthChecker
+	Canary CanarySettings
+	// Now is the clock (time.Now if nil); tests replace it.
+	Now func() time.Time
 
 	// The aggregator: its namespace, StatefulSet and config ConfigMap.
 	Namespace   string
@@ -54,10 +53,11 @@ type AggregatorReconciler struct {
 	ConfigMap   string
 }
 
-// +kubebuilder:rbac:groups=spillway.dev,resources=logpipelines,verbs=get;list;watch
+// +kubebuilder:rbac:groups=spillway.dev,resources=logpipelines,verbs=get;list;watch;patch
 // +kubebuilder:rbac:groups=spillway.dev,resources=logpipelines/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups="",namespace=vector,resources=configmaps,verbs=get;list;watch;create;update;patch
 // +kubebuilder:rbac:groups=apps,namespace=vector,resources=statefulsets,verbs=get;list;watch;patch
+// +kubebuilder:rbac:groups="",namespace=vector,resources=pods,verbs=get;list;watch
 
 // Reconcile renders, applies and rolls out the aggregator config.
 func (r *AggregatorReconciler) Reconcile(ctx context.Context, _ ctrl.Request) (ctrl.Result, error) {
@@ -69,13 +69,33 @@ func (r *AggregatorReconciler) Reconcile(ctx context.Context, _ ctrl.Request) (c
 	}
 	accepted, invalid := r.partition(list.Items)
 
+	var sts appsv1.StatefulSet
+	err := r.Get(ctx, types.NamespacedName{Namespace: r.Namespace, Name: r.StatefulSet}, &sts)
+	if apierrors.IsNotFound(err) {
+		r.report(ctx, list.Items, invalid, nil, rolloutState{phase: phaseRolling},
+			spillwayv1alpha1.ReasonAggregatorNotFound, fmt.Sprintf("aggregator StatefulSet %s/%s not found", r.Namespace, r.StatefulSet))
+		return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
+	} else if err != nil {
+		return ctrl.Result{}, err
+	}
+	if !selectsConfig(&sts) {
+		r.report(ctx, list.Items, invalid, nil, rolloutState{phase: phaseRolling}, spillwayv1alpha1.ReasonAggregatorMisconfigured,
+			fmt.Sprintf("aggregator StatefulSet %s/%s doesn't select its config file with $(%s) from the %s annotation (see vector/aggregator/values.yaml)",
+				r.Namespace, r.StatefulSet, SuffixEnv, SuffixAnnotation))
+		return ctrl.Result{}, nil
+	}
+	accepted, failed, err := r.applyQuarantine(ctx, &sts, list.Items, accepted)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+
 	cfg, accepted, err := r.validated(ctx, accepted, invalid)
 	var rejected *validate.Error
 	if errors.As(err, &rejected) {
 		// Not even the pipelines that pass alone combine into a config Vector
 		// accepts. Apply nothing: the aggregator keeps its last valid config.
 		logger.Info("rendered config failed validation; keeping the current config", "output", rejected.Output)
-		r.setStatuses(ctx, list.Items, invalid, metav1.ConditionFalse, spillwayv1alpha1.ReasonValidationFailed,
+		r.report(ctx, list.Items, invalid, failed, rolloutState{}, spillwayv1alpha1.ReasonValidationFailed,
 			"the combined config failed validation, so the aggregator keeps its last valid config: "+rejected.Error())
 		return ctrl.Result{}, nil
 	} else if err != nil {
@@ -84,40 +104,121 @@ func (r *AggregatorReconciler) Reconcile(ctx context.Context, _ ctrl.Request) (c
 	sum := sha256.Sum256(cfg)
 	hash := hex.EncodeToString(sum[:])[:16]
 
-	if err := r.applyConfigMap(ctx, cfg); err != nil {
+	if err := r.applyConfigMap(ctx, &sts, hash, cfg); err != nil {
 		return ctrl.Result{}, err
 	}
+	st, res, err := r.rollout(ctx, &sts, hash, accepted)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+	logger.V(1).Info("rollout", "hash", hash, "phase", st.phase, "message", st.message)
+	r.report(ctx, list.Items, invalid, failed, st, "", st.message)
+	return res, nil
+}
 
-	var sts appsv1.StatefulSet
-	err = r.Get(ctx, types.NamespacedName{Namespace: r.Namespace, Name: r.StatefulSet}, &sts)
-	if apierrors.IsNotFound(err) {
-		msg := fmt.Sprintf("aggregator StatefulSet %s/%s not found", r.Namespace, r.StatefulSet)
-		r.setStatuses(ctx, list.Items, invalid, metav1.ConditionFalse, spillwayv1alpha1.ReasonAggregatorNotFound, msg)
-		return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
-	} else if err != nil {
-		return ctrl.Result{}, err
+// applyQuarantine leaves quarantined pipeline generations out of accepted. A
+// quarantined pipeline with a last good spec keeps running that spec; one
+// without (it never rolled out) is left out entirely. It returns why each
+// quarantined pipeline was held back, and drops quarantine entries whose
+// pipeline has since changed or gone.
+func (r *AggregatorReconciler) applyQuarantine(ctx context.Context, sts *appsv1.StatefulSet,
+	all, accepted []spillwayv1alpha1.LogPipeline) ([]spillwayv1alpha1.LogPipeline, map[types.UID]string, error) {
+	q := quarantineOf(sts)
+	if len(q) == 0 {
+		return accepted, nil, nil
 	}
-	if sts.Spec.Template.Annotations[HashAnnotation] != hash {
-		logger.Info("rolling out new aggregator config", "hash", hash, "pipelines", len(accepted), "invalid", len(invalid))
+	current := map[string]int64{}
+	for _, p := range all {
+		current[string(p.UID)] = p.Generation
+	}
+	stale := false
+	for uid, e := range q {
+		if current[uid] != e.Generation {
+			delete(q, uid)
+			stale = true
+		}
+	}
+	if stale {
+		raw, _ := json.Marshal(q)
+		v := string(raw)
 		patch := client.MergeFrom(sts.DeepCopy())
-		if sts.Spec.Template.Annotations == nil {
-			sts.Spec.Template.Annotations = map[string]string{}
-		}
-		sts.Spec.Template.Annotations[HashAnnotation] = hash
-		if err := r.Patch(ctx, &sts, patch); err != nil {
-			return ctrl.Result{}, err
+		setAnnotations(&sts.Annotations, map[string]*string{annQuarantine: &v})
+		if err := r.Patch(ctx, sts, patch); err != nil {
+			return nil, nil, err
 		}
 	}
 
-	if !rolledOut(&sts, hash) {
-		r.setStatuses(ctx, list.Items, invalid, metav1.ConditionFalse, spillwayv1alpha1.ReasonRollingOut,
-			"the aggregator is restarting with new config")
-		// The StatefulSet watch requeues as pods become ready; this is a backstop.
-		return ctrl.Result{RequeueAfter: 15 * time.Second}, nil
+	failed := map[types.UID]string{}
+	kept := accepted[:0:0]
+	for _, p := range accepted {
+		e, held := q[string(p.UID)]
+		if !held {
+			kept = append(kept, p)
+			continue
+		}
+		msg := fmt.Sprintf("generation %d %s", e.Generation, e.Reason)
+		if last, ok := lastGoodSpec(&p); ok {
+			p.Spec, p.Generation = last.Spec, last.Generation
+			kept = append(kept, p)
+			msg += fmt.Sprintf("; generation %d keeps running", last.Generation)
+		}
+		failed[p.UID] = msg + ". Change the spec to try again"
 	}
-	r.setStatuses(ctx, list.Items, invalid, metav1.ConditionTrue, spillwayv1alpha1.ReasonRolledOut,
-		"the aggregator is running config that includes this pipeline")
-	return ctrl.Result{}, nil
+	return kept, failed, nil
+}
+
+type goodSpec struct {
+	Generation int64                            `json:"generation"`
+	Spec       spillwayv1alpha1.LogPipelineSpec `json:"spec"`
+}
+
+func lastGoodSpec(p *spillwayv1alpha1.LogPipeline) (goodSpec, bool) {
+	var g goodSpec
+	raw, ok := p.Annotations[LastGoodSpecAnnotation]
+	if !ok || json.Unmarshal([]byte(raw), &g) != nil {
+		return g, false
+	}
+	return g, true
+}
+
+// recordLastGoodSpecs stores each pipeline's spec on it once that spec runs
+// on every aggregator.
+func (r *AggregatorReconciler) recordLastGoodSpecs(ctx context.Context, pipelines []spillwayv1alpha1.LogPipeline) error {
+	for _, p := range pipelines {
+		var lp spillwayv1alpha1.LogPipeline
+		if err := r.Get(ctx, client.ObjectKeyFromObject(&p), &lp); err != nil {
+			if apierrors.IsNotFound(err) {
+				continue
+			}
+			return err
+		}
+		if lp.Generation != p.Generation {
+			continue // a quarantined pipeline running its last good spec, or changed since
+		}
+		raw, err := json.Marshal(goodSpec{Generation: p.Generation, Spec: p.Spec})
+		if err != nil {
+			return err
+		}
+		if lp.Annotations[LastGoodSpecAnnotation] == string(raw) {
+			continue
+		}
+		patch := client.MergeFrom(lp.DeepCopy())
+		if lp.Annotations == nil {
+			lp.Annotations = map[string]string{}
+		}
+		lp.Annotations[LastGoodSpecAnnotation] = string(raw)
+		if err := r.Patch(ctx, &lp, patch); err != nil && !apierrors.IsNotFound(err) {
+			return err
+		}
+	}
+	return nil
+}
+
+func (r *AggregatorReconciler) now() time.Time {
+	if r.Now != nil {
+		return r.Now()
+	}
+	return time.Now()
 }
 
 // validated renders accepted and checks the config with Vector. If Vector
@@ -194,63 +295,88 @@ func (r *AggregatorReconciler) partition(items []spillwayv1alpha1.LogPipeline) (
 	return accepted, invalid
 }
 
-func (r *AggregatorReconciler) applyConfigMap(ctx context.Context, cfg []byte) error {
+// applyConfigMap writes the config for hash as its own file in the
+// aggregator's ConfigMap and prunes revisions no pod or rollout needs: it keeps
+// the bootstrap config, the desired, stable and canary revisions, and the one
+// the pod template points at.
+func (r *AggregatorReconciler) applyConfigMap(ctx context.Context, sts *appsv1.StatefulSet, hash string, cfg []byte) error {
+	keep := map[string]bool{BootstrapKey: true, configKey(hash): true}
+	for _, h := range []string{
+		sts.Annotations[annStable], sts.Annotations[annCanary],
+		strings.TrimPrefix(sts.Spec.Template.Annotations[SuffixAnnotation], "-"),
+	} {
+		if h != "" {
+			keep[configKey(h)] = true
+		}
+	}
+
 	var cm corev1.ConfigMap
 	err := r.Get(ctx, types.NamespacedName{Namespace: r.Namespace, Name: r.ConfigMap}, &cm)
 	if apierrors.IsNotFound(err) {
 		cm = corev1.ConfigMap{
-			ObjectMeta: metav1.ObjectMeta{Namespace: r.Namespace, Name: r.ConfigMap},
-			Data:       map[string]string{ConfigKey: string(cfg)},
+			ObjectMeta: metav1.ObjectMeta{Namespace: r.Namespace, Name: r.ConfigMap,
+				Labels: map[string]string{"app.kubernetes.io/managed-by": "spillway-operator"}},
+			Data: map[string]string{configKey(hash): string(cfg)},
 		}
-		cm.Labels = map[string]string{"app.kubernetes.io/managed-by": "spillway-operator"}
 		return r.Create(ctx, &cm)
 	} else if err != nil {
 		return err
 	}
-	if cm.Data[ConfigKey] == string(cfg) && len(cm.Data) == 1 {
+	patch := client.MergeFrom(cm.DeepCopy())
+	if cm.Data == nil {
+		cm.Data = map[string]string{}
+	}
+	changed := cm.Data[configKey(hash)] != string(cfg)
+	cm.Data[configKey(hash)] = string(cfg)
+	for k := range cm.Data {
+		if !keep[k] {
+			delete(cm.Data, k)
+			changed = true
+		}
+	}
+	if cm.Labels["app.kubernetes.io/managed-by"] != "spillway-operator" {
+		if cm.Labels == nil {
+			cm.Labels = map[string]string{}
+		}
+		cm.Labels["app.kubernetes.io/managed-by"] = "spillway-operator"
+		changed = true
+	}
+	if !changed {
 		return nil
 	}
-	patch := client.MergeFrom(cm.DeepCopy())
-	cm.Data = map[string]string{ConfigKey: string(cfg)}
-	if cm.Labels == nil {
-		cm.Labels = map[string]string{}
-	}
-	cm.Labels["app.kubernetes.io/managed-by"] = "spillway-operator"
 	return r.Patch(ctx, &cm, patch)
 }
 
-// rolledOut reports whether every aggregator pod runs the config with hash.
-func rolledOut(sts *appsv1.StatefulSet, hash string) bool {
-	replicas := int32(1)
-	if sts.Spec.Replicas != nil {
-		replicas = *sts.Spec.Replicas
-	}
-	s := sts.Status
-	return sts.Spec.Template.Annotations[HashAnnotation] == hash &&
-		s.ObservedGeneration >= sts.Generation &&
-		s.UpdateRevision != "" && s.CurrentRevision == s.UpdateRevision &&
-		s.UpdatedReplicas == replicas && s.ReadyReplicas == replicas
-}
-
-// setStatuses sets the Ready condition on every pipeline: invalid ones get
-// their render error, the rest get status/reason/message.
-func (r *AggregatorReconciler) setStatuses(ctx context.Context, items []spillwayv1alpha1.LogPipeline,
-	invalid map[types.UID]string, status metav1.ConditionStatus, reason, message string) {
+// report sets every pipeline's Ready condition. Invalid pipelines get their
+// error, and quarantined ones (failed) why their change was held back. A pipeline whose current generation runs in the stable config is
+// Ready; the rest get the rollout's phase. A non-empty reason overrides the
+// phase (for problems with the aggregator itself).
+func (r *AggregatorReconciler) report(ctx context.Context, items []spillwayv1alpha1.LogPipeline,
+	invalid, failed map[types.UID]string, st rolloutState, reason, message string) {
 	logger := log.FromContext(ctx)
 	for i := range items {
 		p := &items[i]
 		if p.DeletionTimestamp != nil {
 			continue
 		}
-		cond := metav1.Condition{
-			Type:               spillwayv1alpha1.ConditionReady,
-			Status:             status,
-			Reason:             reason,
-			Message:            message,
-			ObservedGeneration: p.Generation,
+		cond := metav1.Condition{Type: spillwayv1alpha1.ConditionReady, ObservedGeneration: p.Generation,
+			Status: metav1.ConditionFalse, Reason: reason, Message: message}
+		switch msg, bad := invalid[p.UID]; {
+		case bad:
+			cond.Reason, cond.Message = spillwayv1alpha1.ReasonInvalid, msg
+		case failed[p.UID] != "":
+			cond.Reason, cond.Message = spillwayv1alpha1.ReasonCanaryFailed, failed[p.UID]
+		case reason != "":
+		case inStable(st, p):
+			cond.Status, cond.Reason = metav1.ConditionTrue, spillwayv1alpha1.ReasonRolledOut
+			cond.Message = "the aggregator is running config that includes this pipeline"
+		case st.phase == phaseRejected:
+			cond.Reason = spillwayv1alpha1.ReasonCanaryFailed
+		default:
+			cond.Reason = spillwayv1alpha1.ReasonRollingOut
 		}
-		if msg, bad := invalid[p.UID]; bad {
-			cond.Status, cond.Reason, cond.Message = metav1.ConditionFalse, spillwayv1alpha1.ReasonInvalid, msg
+		if cond.Message == "" {
+			cond.Message = "waiting for the aggregator"
 		}
 		patch := client.MergeFrom(p.DeepCopy())
 		changed := meta.SetStatusCondition(&p.Status.Conditions, cond)
@@ -266,6 +392,12 @@ func (r *AggregatorReconciler) setStatuses(ctx context.Context, items []spillway
 			logger.Error(err, "updating status", "pipeline", client.ObjectKeyFromObject(p))
 		}
 	}
+}
+
+// inStable reports whether the stable config contains p's current generation.
+func inStable(st rolloutState, p *spillwayv1alpha1.LogPipeline) bool {
+	gen, ok := st.stable[string(p.UID)]
+	return ok && gen == p.Generation
 }
 
 // SetupWithManager registers the reconciler. LogPipeline changes, and changes

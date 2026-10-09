@@ -149,12 +149,14 @@ type LogPipelineStatus struct {
 	ObservedGeneration int64 `json:"observedGeneration,omitempty"`
 
 	// Conditions: Ready is True once the aggregator runs config that includes
-	// this pipeline. When False, its reason says why: RollingOut while the
-	// aggregator restarts with new config, Invalid when the pipeline can't be
+	// this pipeline's current generation. When False, its reason says why:
+	// RollingOut while new config is on a canary or rolling to every
+	// aggregator, CanaryFailed when the canary was rolled back (the aggregator
+	// keeps the previous config), Invalid when the pipeline can't be
 	// rendered (for example, its team or a namespace is already claimed) or
 	// Vector rejects its config, ValidationFailed when the combined config is
 	// rejected and the aggregator keeps its last valid config, or
-	// AggregatorNotFound.
+	// AggregatorNotFound or AggregatorMisconfigured.
 	// +listType=map
 	// +listMapKey=type
 	// +optional
@@ -190,9 +192,11 @@ type LogPipelineList struct {
 const (
 	ConditionReady = "Ready"
 
-	ReasonRolledOut          = "RolledOut"
-	ReasonRollingOut         = "RollingOut"
-	ReasonInvalid            = "Invalid"
-	ReasonValidationFailed   = "ValidationFailed"
-	ReasonAggregatorNotFound = "AggregatorNotFound"
+	ReasonRolledOut               = "RolledOut"
+	ReasonRollingOut              = "RollingOut"
+	ReasonInvalid                 = "Invalid"
+	ReasonValidationFailed        = "ValidationFailed"
+	ReasonAggregatorNotFound      = "AggregatorNotFound"
+	ReasonAggregatorMisconfigured = "AggregatorMisconfigured"
+	ReasonCanaryFailed            = "CanaryFailed"
 )

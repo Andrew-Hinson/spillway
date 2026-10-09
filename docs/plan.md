@@ -80,7 +80,7 @@ Each line is one GitHub issue: the title, then the acceptance criteria after the
 4. [x] Validation gate — `vector validate` runs on rendered config before apply, either in a Job or with Vector bundled in the operator image (decision recorded as an ADR); a bad spec never reaches a running aggregator
 5. [x] `spillwayctl render` and `validate` — same renderer as the operator, usable without a cluster
 6. [x] VRL unit tests in CI — every generated transform covered by `vector test`
-7. [ ] Canary config rollout — new config to one aggregator first, promoted only if error rates hold, rolled back otherwise; drop-rate checks added once M3 policies exist
+7. [x] Canary config rollout — new config to one aggregator first, promoted only if error rates hold, rolled back otherwise; drop-rate checks added once M3 policies exist
 
 ### M3 — Policy features
 
