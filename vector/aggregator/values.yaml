@@ -3,7 +3,26 @@
 # ConfigMap; `make aggregator` seeds it with vector.yaml next to this file (the
 # render with no LogPipelines, i.e. the M1 pipeline).
 role: Aggregator
-replicas: 1
+# Two replicas, so new config can run on one (the canary) while the other
+# keeps the last good config. See docs/adr/0002.
+replicas: 2
+# Voluntary disruptions (node drains) take at most one aggregator at a time.
+podDisruptionBudget:
+  enabled: true
+  minAvailable: 1
+
+# Each pod loads the config file its pod template's spillway.dev/config-suffix
+# annotation names (vector<suffix>.yaml); without it, the bootstrap
+# vector.yaml. The operator sets the annotation and the update partition;
+# nothing here may set either, or Helm and the operator would conflict.
+args:
+  - --config
+  - /etc/vector/vector$(SPILLWAY_CONFIG_SUFFIX).yaml
+env:
+  - name: SPILLWAY_CONFIG_SUFFIX
+    valueFrom:
+      fieldRef:
+        fieldPath: metadata.annotations['spillway.dev/config-suffix']
 
 existingConfigMaps:
   - vector-aggregator-config
