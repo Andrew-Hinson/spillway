@@ -30,9 +30,10 @@ func main() {
 	var metricsAddr, probeAddr string
 	var leaderElect bool
 	rec := controller.AggregatorReconciler{Options: render.DefaultOptions()}
-	// Cold storage (MinIO) isn't deployed until M3.5: until it's configured,
+	// Cold storage is off unless --cold-bucket is set: until it's configured,
 	// pipelines that route to cold are marked Invalid rather than rendered
 	// with a sink that would block once its buffer filled.
+	// deploy/operator/operator.yaml sets it for the local bucket.
 	rec.Options.Cold = nil
 	var cold render.ColdStorage
 	var vector validate.Vector
@@ -48,7 +49,7 @@ func main() {
 	flag.StringVar(&rec.StatefulSet, "aggregator-statefulset", "vector-aggregator", "the aggregator's StatefulSet")
 	flag.StringVar(&rec.ConfigMap, "aggregator-configmap", "vector-aggregator-config", "the ConfigMap the aggregator loads its config from")
 	flag.StringVar(&cold.Bucket, "cold-bucket", "", "S3 bucket for cold storage; empty disables cold routing")
-	flag.StringVar(&cold.Endpoint, "cold-endpoint", "", "S3 endpoint, e.g. http://minio.storage.svc:9000 (empty for AWS)")
+	flag.StringVar(&cold.Endpoint, "cold-endpoint", "", "S3 endpoint, e.g. http://s3.storage.svc:7070 (empty for AWS)")
 	flag.StringVar(&cold.Region, "cold-region", "us-east-1", "S3 region")
 	flag.StringVar(&metricsAddr, "metrics-bind-address", ":8080", "address for /metrics")
 	flag.StringVar(&probeAddr, "health-probe-bind-address", ":8081", "address for /healthz and /readyz")

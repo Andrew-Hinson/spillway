@@ -70,7 +70,7 @@ type Platform struct {
 	PodLogs bool
 }
 
-// ColdStorage is an S3-compatible bucket (MinIO locally, S3 in the cloud).
+// ColdStorage is an S3-compatible bucket (versitygw locally, S3 in the cloud).
 type ColdStorage struct {
 	Endpoint string // empty for AWS S3
 	Bucket   string
@@ -84,7 +84,7 @@ func DefaultOptions() Options {
 		LokiEndpoint:   "http://loki.observability.svc:3100",
 		PodLogsTopic:   "spillway.pods",
 		Cold: &ColdStorage{
-			Endpoint: "http://minio.storage.svc:9000",
+			Endpoint: "http://s3.storage.svc:7070",
 			Bucket:   "spillway-cold",
 			Region:   "us-east-1",
 		},
@@ -550,7 +550,7 @@ func (c *config) addColdSink(inputs []string, opts Options) {
 	}
 	if opts.Cold.Endpoint != "" {
 		s["endpoint"] = opts.Cold.Endpoint
-		// MinIO serves buckets by path, not by subdomain.
+		// The local gateway serves buckets by path, not by subdomain.
 		s["force_path_style"] = true
 	}
 	c.sinks["cold_s3"] = s

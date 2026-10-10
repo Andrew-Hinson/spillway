@@ -5,8 +5,8 @@ Spillway is a Kubernetes log platform: one `LogPipeline` spec per team becomes a
 ## Where the state lives
 
 - **Progress:** [`docs/plan.md`](docs/plan.md) has the milestones, the gate for each, and a checkbox per work item. Each item is a GitHub issue titled `[Mx.y] …` with its acceptance criteria. `gh issue list` shows what's open.
-- **Decisions:** [`docs/adr/`](docs/adr). 0001: validation with Vector bundled in the operator image. 0002: canary rollout via StatefulSet partition, quarantine and last-good specs. 0003: redaction on by default, with boundary-free patterns. 0004: pod logs parsed, with only the feeder stamp trusted from an app's `spillway`. 0005: budgets split evenly across the aggregators, over a 10 s window, with pod logs through Kafka so they spread evenly.
-- **Measurements:** [`docs/results/`](docs/results): the M1 baseline, the M2 gate run, M3.2's redaction false positives and leak check, M3.3's sampling, dedupe and per-team drops, and M3.4's budgets.
+- **Decisions:** [`docs/adr/`](docs/adr). 0001: validation with Vector bundled in the operator image. 0002: canary rollout via StatefulSet partition, quarantine and last-good specs. 0003: redaction on by default, with boundary-free patterns. 0004: pod logs parsed, with only the feeder stamp trusted from an app's `spillway`. 0005: budgets split evenly across the aggregators, over a 10 s window, with pod logs through Kafka so they spread evenly. 0006: versitygw, not MinIO, for local cold storage (MinIO's images are no longer published).
+- **Measurements:** [`docs/results/`](docs/results): the M1 baseline, the M2 gate run, M3.2's redaction false positives and leak check, M3.3's sampling, dedupe and per-team drops, M3.4's budgets, and M3.5's cold path.
 - **Why something is the way it is:** the PR descriptions (`gh pr view N`) record the design, what testing found, and known limitations.
 
 ## Workflow for a work item
@@ -36,6 +36,8 @@ Spillway is a Kubernetes log platform: one `LogPipeline` spec per team becomes a
 | `make m2-gate`, `make baseline` | Recorded measurements; see `docs/results` |
 | `make leak-check WINDOW=15m` | Search every hot-sink stream for fixture values; fails on a leak or if no fixtures arrived |
 | `make sampling-check WINDOW=10m REF=edits=wiki-all` | Each team's dedupe, sampling and budget drops; per-level kept share against an unsampled reference team |
+| `make cold-check` | Sync the cold bucket and check every object: `team=…/date=…/` keys matching their events, gzip, no fixture values |
+| `make storage` | Local S3 (versitygw in `storage`), the `spillway-cold` bucket, and generated credentials in the `cold-storage` Secret (also copied to `vector`) |
 | `make redaction-fp DURATION=600` | Capture live Wikimedia events and count what each redaction pattern masks |
 | `make tools` | Pinned kind, kubectl, helm, golangci-lint, controller-gen, setup-envtest and vector, in `./bin` |
 
@@ -51,7 +53,7 @@ Spillway is a Kubernetes log platform: one `LogPipeline` spec per team becomes a
 - **Operator** (`internal/controller`): renders → applies quarantine → `vector validate` (cached) → writes `vector-<hash>.yaml` to the ConfigMap → canaries via partition → promotes or rolls back.
   - State lives in StatefulSet annotations (`spillway.dev/*`).
   - Pods select their config file through `$(SPILLWAY_CONFIG_SUFFIX)` from a pod annotation.
-  - Cold storage is **off** unless `--cold-bucket` is set: MinIO arrives in M3.5, and until then cold-routed pipelines are `Invalid`.
+  - Cold storage is on in kind: `deploy/operator/operator.yaml` passes `--cold-bucket=spillway-cold --cold-endpoint=http://s3.storage.svc:7070`. Without `--cold-bucket`, cold-routed pipelines are `Invalid`. `bench/m2_gate.sh` swaps the endpoint for a broken one and restores the manifest's args afterwards.
 - **Field ownership:** the operator owns only fields Helm never sets: the config-suffix pod annotation, `updateStrategy.partition`, and its own annotations. Never `kubectl set`/`patch` a Helm-owned field, or the next `helm upgrade` fails with a server-side-apply conflict. If it happens, set the field back to Helm's value.
 - **Pod logs** travel agent → Kafka topic `spillway.pods` → the aggregators' shared `agents` source (consumer group `spillway-pods`, from the oldest offset). The agent produces with no key, so batches spread over the partitions. Parsing (`internal/render/podlogs.go`): a JSON line's fields become the event's fields; any other line stays in `message`. Every line gets a normalized `level` when one is recognizable (JSON, klog, a leading level word, logfmt). An app's `spillway` object is trusted only in the exact feeder-stamp shapes, because redaction skips `.spillway`; the rest lands in `app_spillway`, which is redacted. `TestPodLogSpillwayCantCarryPII` guards this.
 - **Redaction** (`internal/redact`): VRL `redact()` filters, on by default (a spec opts out with `redaction: {disabled: true}`). The patterns have no `\b`: escaped JSON in pod logs (`\n123-45-6789`) defeats word boundaries, and VRL's regex has no lookbehind. `testdata/corpus.yaml` holds the positive and negative cases. Run a candidate pattern against live data with `go run ./bench/redactfp -filter name=r'…'` before changing one.

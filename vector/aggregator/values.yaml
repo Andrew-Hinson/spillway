@@ -23,6 +23,13 @@ env:
     valueFrom:
       fieldRef:
         fieldPath: metadata.annotations['spillway.dev/config-suffix']
+  # Credentials for the cold_s3 sink, made by `make storage`.
+  - name: AWS_ACCESS_KEY_ID
+    valueFrom:
+      secretKeyRef: {name: cold-storage, key: AWS_ACCESS_KEY_ID}
+  - name: AWS_SECRET_ACCESS_KEY
+    valueFrom:
+      secretKeyRef: {name: cold-storage, key: AWS_SECRET_ACCESS_KEY}
 
 existingConfigMaps:
   - vector-aggregator-config

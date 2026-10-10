@@ -66,7 +66,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	// Cold storage is off unless configured, as in the operator.
 	var cold render.ColdStorage
 	fs.StringVar(&cold.Bucket, "cold-bucket", "", "S3 bucket for cold storage; empty means cold routing is invalid, as in the operator")
-	fs.StringVar(&cold.Endpoint, "cold-endpoint", "", "S3 endpoint, e.g. http://minio.storage.svc:9000 (empty for AWS)")
+	fs.StringVar(&cold.Endpoint, "cold-endpoint", "", "S3 endpoint, e.g. http://s3.storage.svc:7070 (empty for AWS)")
 	fs.StringVar(&cold.Region, "cold-region", "us-east-1", "S3 region")
 	out := fs.String("o", "", "render: write the config to this file instead of stdout")
 	vectorBin := fs.String("vector-bin", "vector", "validate: the vector binary (use the aggregator's version)")

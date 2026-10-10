@@ -20,7 +20,7 @@ sinks:
     compression: gzip
     encoding:
       codec: json
-    endpoint: http://minio.storage.svc:9000
+    endpoint: http://s3.storage.svc:7070
     force_path_style: true
     framing:
       method: newline_delimited
