@@ -232,6 +232,13 @@ leak-check: $(KUBECTL) ## Search the hot sink for injected fixture values over W
 		trap 'kill $$pf1 $$pf2' EXIT; sleep 2; \
 		python3 bench/leakcheck.py --window $(or $(WINDOW),15m)
 
+.PHONY: sampling-check
+sampling-check: $(KUBECTL) ## Report each team's dedupe, sampling and budget drops over WINDOW (default 10m); REF=team=ref compares levels to an unsampled team
+	@$(KUBECTL) -n observability port-forward svc/loki 3100:3100 >/dev/null 2>&1 & pf1=$$!; \
+		$(KUBECTL) -n observability port-forward svc/prometheus-server 9090:80 >/dev/null 2>&1 & pf2=$$!; \
+		trap 'kill $$pf1 $$pf2' EXIT; sleep 2; \
+		python3 bench/sampling.py --kubectl $(KUBECTL) --window $(or $(WINDOW),10m) $(if $(REF),--ref $(REF))
+
 .PHONY: redaction-fp
 redaction-fp: $(VECTOR) ## Measure redaction false positives on DURATION seconds (default 600) of the live Wikimedia stream
 	@mkdir -p bin/samples

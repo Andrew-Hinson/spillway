@@ -4,7 +4,9 @@
 // (teams are DNS labels, so the underscore can't be part of a team name):
 //
 //	<team>_src_<name>   a Kafka source, or a filter on the shared agents source
-//	<team>_in_<name>    tag with team and source; reshape pod logs
+//	<team>_in_<name>    tag with team and source; parse pod logs (podlogs.go)
+//	<team>_ids          route events with a spillway.event_id to dedupe
+//	<team>_dedupe       drop recently seen event IDs (feeder replays)
 //	<team>_redact       mask PII             (unless redaction.disabled is set)
 //	    ├─► cold_s3     the complete redacted stream   (if routing.cold)
 //	    └─► <team>_sample   keep a share per level     (if sampling is set)
@@ -13,17 +15,19 @@
 //
 // Cold storage keeps everything; sampling and the budget only thin the hot
 // path. Dropped events show up in Vector's component_discarded_events_total
-// under the team's own component IDs. Sinks are shared by all teams, so the
-// number of disk buffers doesn't grow with the number of teams.
+// under the team's own component IDs, and every metric of a team component
+// carries a team tag (metrics_by_team), so drops sum per team. Sinks are
+// shared by all teams, so the number of disk buffers doesn't grow with the
+// number of teams.
 //
 // Redaction is on by default: a pipeline masks every pattern unless its spec
 // lists fewer or turns redaction off (docs/adr/0003).
 //
 // Data no team claims takes the platform defaults, which are the M1 pipeline
-// with every pattern masked: the feeder topic goes to Loki (wikimedia ->
-// redact_feed -> stamp -> loki) and pod logs go to Loki labelled by
-// namespace, pod and container (agents -> pod_logs -> redact_pods ->
-// loki_pods). A claimed topic or namespace leaves the default path. With no
+// with every pattern masked and pod logs parsed: the feeder topic goes to
+// Loki (wikimedia -> redact_feed -> stamp -> loki) and pod logs go to Loki
+// labelled by namespace, pod and container (agents -> pod_logs ->
+// redact_pods -> loki_pods). A claimed topic or namespace leaves the default path. With no
 // pipelines, Render returns the platform config: vector/aggregator/vector.yaml
 // is generated from it.
 package render
@@ -119,6 +123,9 @@ func RenderWithTests(pipelines []spillwayv1alpha1.LogPipeline, opts Options) (cf
 		cold = append(cold, cl...)
 	}
 	metrics := []string{"internal_metrics"}
+	if len(pipelines) > 0 {
+		metrics = []string{c.addTeamMetrics(pipelines)}
+	}
 	if c.addPlatform(pipelines, opts) {
 		metrics = append(metrics, "latency_metrics")
 	}
@@ -159,6 +166,28 @@ func RenderWithTests(pipelines []spillwayv1alpha1.LogPipeline, opts Options) (cf
 		return nil, nil, err
 	}
 	return append([]byte(header), out...), append([]byte(testsHeader), testsOut...), nil
+}
+
+// teamStages matches the component IDs addPipeline gives a team's
+// components, capturing the team. Platform and shared components (stamp,
+// redact_feed, hot_loki, team_latency_events…) never end in one of these
+// stages.
+const teamStages = `^(?P<team>[a-z0-9-]+)_(?:src_.+|in_.+|ids|dedupe|redact|sample|budget|hot)$`
+
+// addTeamMetrics tags Vector's own metrics for each team's components with
+// the team, so drops (sampling, budget, dedupe), throughput and errors can be
+// summed per team. It returns the ID that feeds the Prometheus exporter.
+func (c *config) addTeamMetrics(pipelines []spillwayv1alpha1.LogPipeline) string {
+	teams := make([]string, len(pipelines))
+	for i, p := range pipelines {
+		teams[i] = p.Spec.Team
+	}
+	const id = "metrics_by_team"
+	c.transforms[id] = remap([]string{"internal_metrics"}, fmt.Sprintf(`found = parse_regex(string(.tags.component_id) ?? "", r'%s') ?? {}
+if includes(%s, found.team) { .tags.team = found.team }
+`, teamStages, vrlStrings(teams)))
+	c.testTeamMetrics(id, teams[0])
+	return id
 }
 
 // hotTeam returns a team that routes hot, for tests of the shared metric.
@@ -214,8 +243,6 @@ func (c *config) addPipeline(p spillwayv1alpha1.LogPipeline, opts Options) (hotO
 	for _, s := range p.Spec.Sources {
 		src, in := id("src_"+s.Name), id("in_"+s.Name)
 		tag := fmt.Sprintf(".spillway.team = %q\n.spillway.source = %q\n", team, s.Name)
-		// A rebuilt pod log has no .spillway yet, so it's set whole.
-		podTag := fmt.Sprintf(".spillway = {\"team\": %q, \"source\": %q}\n", team, s.Name)
 		switch {
 		case s.Kafka != nil:
 			// One consumer group per team and source, so teams reading the same
@@ -232,7 +259,7 @@ func (c *config) addPipeline(p spillwayv1alpha1.LogPipeline, opts Options) (hotO
 				"inputs":    []string{"agents"},
 				"condition": fmt.Sprintf("includes(%s, .kubernetes.pod_namespace)", vrlStrings(s.Kubernetes.Namespaces)),
 			}
-			c.transforms[in] = remap([]string{src}, podLogVRL+podTag)
+			c.transforms[in] = remap([]string{src}, podLogVRL+tag)
 			c.testPodFilter(src, s.Kubernetes.Namespaces)
 			c.testPodIn(in, team, s.Name, s.Kubernetes.Namespaces[0])
 		default:
@@ -242,7 +269,7 @@ func (c *config) addPipeline(p spillwayv1alpha1.LogPipeline, opts Options) (hotO
 	}
 
 	// Everything after this point sees one merged stream per team.
-	head := inputs
+	head := c.addDedupe(id("ids"), id("dedupe"), inputs)
 	if patterns := redactionPatterns(p); len(patterns) > 0 {
 		vrl, err := redact.VRL(patterns)
 		if err != nil {
@@ -280,6 +307,33 @@ func (c *config) addPipeline(p spillwayv1alpha1.LogPipeline, opts Options) (hotO
 	c.transforms[id("hot")] = remap(head, stampVRL)
 	c.testStamp(id("hot"))
 	return []string{id("hot")}, coldOut, nil
+}
+
+// dedupeCache is how many recent event IDs each team remembers. At
+// Wikimedia's ~40 events/s that's about four minutes, far longer than the
+// replay after a feeder reconnects.
+const dedupeCache = 10000
+
+// addDedupe drops events whose spillway.event_id was seen recently: a
+// feeder replaying after a reconnect keeps the upstream ID and Kafka key, so
+// the replay reaches the same partition and aggregator. Vector's dedupe
+// treats a missing field as a value, so every event without an ID would be a
+// duplicate of the first; those bypass it. It returns the IDs that carry the
+// stream on.
+func (c *config) addDedupe(routeID, dedupeID string, inputs []string) []string {
+	c.transforms[routeID] = map[string]any{
+		"type":   "route",
+		"inputs": inputs,
+		"route":  map[string]any{"with_id": "is_string(.spillway.event_id)"},
+	}
+	c.transforms[dedupeID] = map[string]any{
+		"type":   "dedupe",
+		"inputs": []string{routeID + ".with_id"},
+		"fields": map[string]any{"match": []string{"spillway.event_id"}},
+		"cache":  map[string]any{"num_events": dedupeCache},
+	}
+	c.testDedupe(routeID, dedupeID)
+	return []string{dedupeID, routeID + "._unmatched"}
 }
 
 // addAgentsSource adds the shared source the agent DaemonSet sends pod logs to.
@@ -511,20 +565,6 @@ func vrlStrings(ss []string) string {
 	}
 	return "[" + strings.Join(quoted, ", ") + "]"
 }
-
-// podLogVRL keeps a pod log's message and identity and drops the rest of the
-// Kubernetes metadata, as the M1 aggregator did.
-const podLogVRL = `k = object(.kubernetes) ?? {}
-. = {
-  "_timestamp": ._timestamp,
-  "message": .message,
-  "stream": .stream,
-  "node": k.pod_node_name,
-  "namespace": k.pod_namespace,
-  "pod": k.pod_name,
-  "container": k.container_name
-}
-`
 
 // samplingVRL keeps KeepPercent of each listed level. Levels not listed, and
 // events without a level, are kept.

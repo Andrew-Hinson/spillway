@@ -20,6 +20,27 @@ tests:
       type: vrl
     extract_from: pod_logs
 - inputs:
+  - insert_at: pod_logs
+    source: '. = {"message": "{\"level\":\"WARNING\",\"msg\":\"retrying\",\"namespace\":\"spoofed\",\"spillway\":{\"event_id\":\"0b0e7f5e-0c55-4c43-9a51-2d4e4f8c1b0a\",\"team\":\"other\"}}",
+      "stream": "stdout", "kubernetes": {"pod_namespace": "default", "pod_name": "app-0",
+      "container_name": "app", "pod_node_name": "node-1"}}'
+    type: vrl
+  name: pod_logs parses JSON pod logs and keeps only the trusted stamp
+  outputs:
+  - conditions:
+    - source: |
+        assert_eq!(.msg, "retrying")
+        assert_eq!(.level, "warn")
+        assert_eq!(.namespace, "default")
+        assert_eq!(.app_namespace, "spoofed")
+        assert_eq!(.spillway.event_id, "0b0e7f5e-0c55-4c43-9a51-2d4e4f8c1b0a")
+        assert_eq!(.app_spillway.team, "other")
+        assert!(!exists(.message))
+        assert!(!exists(.kubernetes))
+        assert!(!exists(.spillway.team))
+      type: vrl
+    extract_from: pod_logs
+- inputs:
   - insert_at: redact_pods
     source: '. = {"message": "contact: jo.doe@example.com", "detail": {"note": "jo.doe@example.com"},
       "spillway": {"team": "t", "event_id": "jo.doe@example.com"}}'

@@ -195,13 +195,15 @@ func TestEveryTransformHasATest(t *testing.T) {
 				t.Fatalf("%s: %v", path, err)
 			}
 		}
+		// A test of a named output (route.with_id) covers its transform.
 		covered := map[string]bool{}
+		cover := func(id string) { covered[strings.SplitN(id, ".", 2)[0]] = true }
 		for _, tc := range suite.Tests {
 			for _, o := range tc.Outputs {
-				covered[o.ExtractFrom] = true
+				cover(o.ExtractFrom)
 			}
 			for _, id := range tc.NoOutputsFrom {
-				covered[id] = true
+				cover(id)
 			}
 		}
 		for id := range cfg.Transforms {
