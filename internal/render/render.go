@@ -50,8 +50,8 @@ import (
 type Options struct {
 	KafkaBootstrap string
 	LokiEndpoint   string
-	// AgentsAddress is where the aggregator listens for the agent DaemonSet.
-	AgentsAddress string
+	// PodLogsTopic is the Kafka topic the agent DaemonSet writes pod logs to.
+	PodLogsTopic string
 	// Cold is required if any pipeline routes to cold storage.
 	Cold *ColdStorage
 	// Platform is what flows when no team claims it.
@@ -82,7 +82,7 @@ func DefaultOptions() Options {
 	return Options{
 		KafkaBootstrap: "spillway-kafka-bootstrap.kafka.svc:9092",
 		LokiEndpoint:   "http://loki.observability.svc:3100",
-		AgentsAddress:  "0.0.0.0:6000",
+		PodLogsTopic:   "spillway.pods",
 		Cold: &ColdStorage{
 			Endpoint: "http://minio.storage.svc:9000",
 			Bucket:   "spillway-cold",
@@ -364,9 +364,14 @@ func (c *config) addDedupe(routeID, dedupeID string, inputs []string) []string {
 	return []string{dedupeID, routeID + "._unmatched"}
 }
 
-// addAgentsSource adds the shared source the agent DaemonSet sends pod logs to.
+// addAgentsSource adds the shared source of pod logs: the topic the agent
+// DaemonSet writes to, read by every aggregator in one consumer group. The
+// agents spread batches over its partitions, so each aggregator gets an even
+// share of every namespace (which budgets rely on, docs/adr/0005). Pod logs
+// are read from the oldest retained offset: unlike the feeder topics, nothing
+// else holds them.
 func (c *config) addAgentsSource(opts Options) {
-	c.sources["agents"] = map[string]any{"type": "vector", "address": opts.AgentsAddress}
+	c.sources["agents"] = kafkaSource(opts, "spillway-pods", opts.PodLogsTopic, "earliest")
 }
 
 func (c *config) addHotSink(inputs []string, opts Options, team string) {
@@ -383,7 +388,7 @@ func (c *config) addHotSink(inputs []string, opts Options, team string) {
 		"out_of_order_action": "accept",
 		"batch":               map[string]any{"timeout_secs": 1},
 		"buffer":              diskBuffer(1 << 30),
-		// Commit Kafka offsets (and answer agents) only once events are buffered.
+		// Commit Kafka offsets only once events are buffered.
 		"acknowledgements": map[string]any{"enabled": true},
 	}
 	// Feeder-to-sink latency as a histogram. Only events with a produce
@@ -461,7 +466,7 @@ func (c *config) addPlatform(pipelines []spillwayv1alpha1.LogPipeline, opts Opti
 			"out_of_order_action": "accept",
 			"batch":               map[string]any{"timeout_secs": 1},
 			"buffer":              diskBuffer(512 << 20),
-			// Answer an agent's batch only once it's in this buffer.
+			// Commit pod-log offsets only once events are in this buffer.
 			"acknowledgements": map[string]any{"enabled": true},
 		}
 	}

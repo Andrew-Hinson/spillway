@@ -1,4 +1,4 @@
-# Spillway agent: pod logs on every node -> the aggregator.
+# Spillway agent: pod logs on every node -> Kafka (spillway.pods) -> the aggregators.
 data_dir: /vector-data-dir
 
 # Same timestamp key as the aggregator (see vector/aggregator/vector.yaml), so
@@ -19,14 +19,24 @@ sources:
     scrape_interval_secs: 15
 
 sinks:
+  # To the aggregators through Kafka, like feeder events. With no key, each
+  # batch goes to a random partition of spillway.pods, so every aggregator in
+  # the consumer group gets an even share of every namespace's logs, which is
+  # what lets each enforce an even share of a team's budget (docs/adr/0005).
+  # A gRPC connection straight to the aggregators' Service would pin each
+  # agent to one pod.
   aggregator:
-    type: vector
+    type: kafka
     inputs: [pods]
-    address: vector-aggregator.vector.svc:6000
-    # Hold logs on the node while the aggregator is down or rolling. A batch
-    # leaves this buffer only once the aggregator has it in its own disk
-    # buffer. (kubernetes_logs can't take end-to-end acknowledgements, so file
-    # checkpoints don't wait for delivery; this buffer is what protects them.)
+    bootstrap_servers: spillway-kafka-bootstrap.kafka.svc:9092
+    topic: spillway.pods
+    encoding:
+      codec: json
+    compression: zstd
+    # Hold logs on the node while Kafka is unreachable. A batch leaves this
+    # buffer only once Kafka has it. (kubernetes_logs can't take end-to-end
+    # acknowledgements, so file checkpoints don't wait for delivery; this
+    # buffer is what protects them.)
     buffer:
       type: disk
       max_size: 268435488 # 256 MiB, the minimum for a disk buffer

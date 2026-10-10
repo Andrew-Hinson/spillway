@@ -180,7 +180,9 @@ aggregator: $(HELM) $(KUBECTL) ## Deploy the Vector aggregator (Kafka -> Loki)
 		-f vector/aggregator/values.yaml
 
 .PHONY: agent
-agent: $(HELM) $(KUBECTL) ## Deploy the Vector agent DaemonSet (pod logs -> aggregator)
+agent: $(HELM) $(KUBECTL) ## Deploy the Vector agent DaemonSet (pod logs -> Kafka -> aggregators)
+	$(KUBECTL) apply -f vector/agent/topic.yaml
+	$(KUBECTL) -n kafka wait kafkatopic/spillway.pods --for=condition=Ready --timeout=2m
 	$(KUBECTL) create namespace vector --dry-run=client -o yaml | $(KUBECTL) apply -f -
 	$(KUBECTL) -n vector create configmap vector-agent-config \
 		--from-file=vector/agent/vector.yaml --dry-run=client -o yaml | $(KUBECTL) apply -f -

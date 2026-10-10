@@ -45,10 +45,6 @@ service:
       port: 8686
       protocol: TCP
       targetPort: 8686
-    - name: agents
-      port: 6000
-      protocol: TCP
-      targetPort: 6000
     - name: metrics
       port: 9598
       protocol: TCP
