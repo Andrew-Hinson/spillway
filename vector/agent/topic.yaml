@@ -1,0 +1,15 @@
+# Pod logs from the agents. Six partitions divide evenly among 1, 2, 3 or 6
+# aggregators, so each gets the same share of the traffic (docs/adr/0005).
+apiVersion: kafka.strimzi.io/v1
+kind: KafkaTopic
+metadata:
+  name: spillway.pods
+  namespace: kafka
+  labels:
+    strimzi.io/cluster: spillway
+spec:
+  partitions: 6
+  replicas: 1
+  config:
+    retention.ms: 86400000       # 1 day
+    retention.bytes: 268435456   # 256 MiB per partition, 1.5 GiB in all, within the 10Gi broker volume

@@ -17,6 +17,9 @@ package render
 // Levels are lowercased and aliased (warning → warn, err and eror → error,
 // dbug → debug), and a line with no recognizable level gets none.
 //
+// Pod logs reach the aggregators through Kafka as JSON, so the log time
+// arrives as a string; it's parsed back into a timestamp for the Loki sinks.
+//
 // The pod's identity always wins: an app field that collides with one
 // (namespace, pod, container, node, stream, _timestamp) is kept as app_<name>.
 //
@@ -27,6 +30,8 @@ package render
 // fixture {id: int, pattern: a built-in pattern}. Anything else stays in the
 // event as app_spillway, where redaction sees it.
 const podLogVRL = `k = object(.kubernetes) ?? {}
+ts = ._timestamp
+if is_string(ts) { ts = parse_timestamp(string!(ts), "%+") ?? ts }
 line = to_string(.message) ?? ""
 fields = {}
 if starts_with(line, "{") {
@@ -89,7 +94,7 @@ aliases = {
 level = string(get(aliases, [level]) ?? null) ?? level
 if match(level, r'^[a-z]{1,16}$') { fields.level = level }
 . = merge(fields, {
-  "_timestamp": ._timestamp,
+  "_timestamp": ts,
   "stream": .stream,
   "node": k.pod_node_name,
   "namespace": k.pod_namespace,

@@ -41,9 +41,9 @@ func (c *config) expectNone(name, at, input string) { c.test(name, at, input, at
 
 func vrlObject(fields string) string { return ". = {" + fields + "}" }
 
-// podEvent is a pod log as the agents send it.
+// podEvent is a pod log as the agents send it, decoded from Kafka.
 func podEvent(namespace string) string {
-	return vrlObject(fmt.Sprintf(`"message": "hello", "stream": "stdout", "kubernetes": {"pod_namespace": %q, "pod_name": "app-0", "container_name": "app", "pod_node_name": "node-1", "pod_ip": "10.0.0.1", "pod_labels": {"app": "x"}}`, namespace))
+	return vrlObject(fmt.Sprintf(`"message": "hello", "stream": "stdout", "_timestamp": "2026-01-01T00:00:00.5Z", "kubernetes": {"pod_namespace": %q, "pod_name": "app-0", "container_name": "app", "pod_node_name": "node-1", "pod_ip": "10.0.0.1", "pod_labels": {"app": "x"}}`, namespace))
 }
 
 func (c *config) testKafkaIn(id, team, source string) {
@@ -76,6 +76,8 @@ func otherNamespace(namespaces []string) string {
 func podLogAsserts(namespace string) []string {
 	return []string{
 		`assert_eq!(.message, "hello")`,
+		// It arrives through Kafka as a JSON string.
+		`assert_eq!(._timestamp, t'2026-01-01T00:00:00.5Z')`,
 		`assert_eq!(.stream, "stdout")`,
 		fmt.Sprintf(`assert_eq!(.namespace, %q)`, namespace),
 		`assert_eq!(.pod, "app-0")`,

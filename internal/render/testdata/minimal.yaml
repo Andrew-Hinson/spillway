@@ -94,8 +94,21 @@ sinks:
     type: prometheus_exporter
 sources:
   agents:
-    address: 0.0.0.0:6000
-    type: vector
+    auto_offset_reset: earliest
+    bootstrap_servers: spillway-kafka-bootstrap.kafka.svc:9092
+    decoding:
+      codec: json
+    group_id: spillway-pods
+    headers_key: ""
+    key_field: ""
+    metrics:
+      topic_lag_metric: true
+    offset_key: ""
+    partition_key: ""
+    topic_key: ""
+    topics:
+    - spillway.pods
+    type: kafka
   internal_metrics:
     scrape_interval_secs: 15
     type: internal_metrics
@@ -139,6 +152,8 @@ transforms:
     - unclaimed_pods
     source: |
       k = object(.kubernetes) ?? {}
+      ts = ._timestamp
+      if is_string(ts) { ts = parse_timestamp(string!(ts), "%+") ?? ts }
       line = to_string(.message) ?? ""
       fields = {}
       if starts_with(line, "{") {
@@ -201,7 +216,7 @@ transforms:
       level = string(get(aliases, [level]) ?? null) ?? level
       if match(level, r'^[a-z]{1,16}$') { fields.level = level }
       . = merge(fields, {
-        "_timestamp": ._timestamp,
+        "_timestamp": ts,
         "stream": .stream,
         "node": k.pod_node_name,
         "namespace": k.pod_namespace,
@@ -260,6 +275,8 @@ transforms:
     - search_src_pods
     source: |
       k = object(.kubernetes) ?? {}
+      ts = ._timestamp
+      if is_string(ts) { ts = parse_timestamp(string!(ts), "%+") ?? ts }
       line = to_string(.message) ?? ""
       fields = {}
       if starts_with(line, "{") {
@@ -322,7 +339,7 @@ transforms:
       level = string(get(aliases, [level]) ?? null) ?? level
       if match(level, r'^[a-z]{1,16}$') { fields.level = level }
       . = merge(fields, {
-        "_timestamp": ._timestamp,
+        "_timestamp": ts,
         "stream": .stream,
         "node": k.pod_node_name,
         "namespace": k.pod_namespace,

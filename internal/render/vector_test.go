@@ -80,7 +80,12 @@ func runTransforms(t *testing.T, transforms map[string]any, entry string, output
 // renderedTransforms renders one pipeline and returns its transforms.
 func renderedTransforms(t *testing.T, p spillwayv1alpha1.LogPipeline) map[string]any {
 	t.Helper()
-	b, err := Render([]spillwayv1alpha1.LogPipeline{p}, DefaultOptions())
+	return renderedTransformsWith(t, p, DefaultOptions())
+}
+
+func renderedTransformsWith(t *testing.T, p spillwayv1alpha1.LogPipeline, opts Options) map[string]any {
+	t.Helper()
+	b, err := Render([]spillwayv1alpha1.LogPipeline{p}, opts)
 	if err != nil {
 		t.Fatal(err)
 	}
