@@ -32,7 +32,14 @@ sinks:
     topic: spillway.pods
     encoding:
       codec: json
-    compression: zstd
+    # librdkafka queues up to 1 GiB in memory by default. Capped, with lz4,
+    # the agent's heap levelled off at ~172 MiB in kind, against ~120 MiB
+    # with no sink at all, and over 230 MiB and climbing without the cap. The
+    # disk buffer above takes the backpressure instead.
+    compression: lz4
+    librdkafka_options:
+      queue.buffering.max.kbytes: "16384"
+      queue.buffering.max.messages: "10000"
     # Hold logs on the node while Kafka is unreachable. A batch leaves this
     # buffer only once Kafka has it. (kubernetes_logs can't take end-to-end
     # acknowledgements, so file checkpoints don't wait for delivery; this

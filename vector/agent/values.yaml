@@ -24,7 +24,10 @@ resources:
     cpu: 50m
     memory: 64Mi
   limits:
-    memory: 256Mi
+    # Measured heap: ~120 MiB with no sink (pod metadata and file watchers),
+    # ~172 MiB steady with the Kafka sink, 196 MiB at start-up. 256 MiB was
+    # too close: an agent was OOM-killed into a crash loop.
+    memory: 512Mi
 
 # Nothing connects to the agents (Prometheus scrapes the pods directly), and
 # the chart's Service would have no ports, which the API server rejects.
