@@ -1,6 +1,6 @@
 # ADR 0004: Parse pod logs, and trust only the stamp in an app's `spillway`
 
-Status: proposed · 2026-10-10 · M3.3
+Status: accepted · 2026-10-10 · M3.3
 
 ## Context
 
