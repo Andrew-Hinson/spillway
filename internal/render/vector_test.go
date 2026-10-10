@@ -5,13 +5,11 @@ package render
 // needs many cases (the pod-log formats).
 
 import (
-	"bufio"
-	"bytes"
 	"context"
 	"encoding/json"
 	"os"
-	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -35,8 +33,11 @@ func vectorBin(t *testing.T) string {
 }
 
 // runTransforms feeds events (JSON objects) from stdin into the transform
-// entry, and returns what reaches a console sink reading outputs, in order.
-func runTransforms(t *testing.T, transforms map[string]any, entry string, outputs []string, events []string) []map[string]any {
+// entry, and returns what reaches a console sink reading outputs, in order
+// per path. Each event in sentinels is sent last and must come out: one per
+// path through the transforms, so that once all of them have arrived, so has
+// everything sent before them. They're left out of the result.
+func runTransforms(t *testing.T, transforms map[string]any, entry string, outputs, events, sentinels []string) []map[string]any {
 	t.Helper()
 	dir := t.TempDir()
 	transforms[entry].(map[string]any)["inputs"] = []string{"in"}
@@ -55,21 +56,23 @@ func runTransforms(t *testing.T, transforms map[string]any, entry string, output
 	if err := os.WriteFile(path, cfg, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	cmd := exec.CommandContext(context.Background(), vectorBin(t), "--quiet", "--config", path)
-	cmd.Stdin = strings.NewReader(strings.Join(events, "\n") + "\n")
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout, cmd.Stderr = &stdout, &stderr
-	if err := cmd.Run(); err != nil {
-		t.Fatalf("vector: %v\n%s", err, stderr.String())
-	}
 	var out []map[string]any
-	sc := bufio.NewScanner(&stdout)
-	for sc.Scan() {
+	waiting := len(sentinels)
+	input := strings.Join(append(slices.Clone(events), sentinels...), "\n") + "\n"
+	err = vectorrun.Stream(context.Background(), vectorBin(t), path, []byte(input), func(line []byte) (bool, error) {
 		var e map[string]any
-		if err := json.Unmarshal(sc.Bytes(), &e); err != nil {
-			t.Fatal(err)
+		if err := json.Unmarshal(line, &e); err != nil {
+			return false, err
 		}
-		out = append(out, e)
+		if e["sentinel"] == true {
+			waiting--
+		} else {
+			out = append(out, e)
+		}
+		return waiting == 0, nil
+	})
+	if err != nil {
+		t.Fatal(err)
 	}
 	return out
 }
@@ -100,6 +103,9 @@ func TestDedupeDropsRepeatedIDs(t *testing.T) {
 		`{"message": "y"}`,
 		`{"message": "x"}`,
 		`{"message": "z", "spillway": {"team": "t"}}`,
+	}, []string{
+		`{"sentinel": true, "spillway": {"event_id": "id-sentinel"}}`,
+		`{"sentinel": true}`,
 	})
 	var got []string
 	for _, e := range out {

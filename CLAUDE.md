@@ -70,6 +70,7 @@ Spillway is a Kubernetes log platform: one `LogPipeline` spec per team becomes a
 - **python3 is 3.9:** backslashes aren't allowed inside f-string expressions. Build strings outside the f-string, or write a script file.
 - **zsh doesn't word-split** an unquoted `$VAR` containing spaces: use arrays or a script.
 - **Distroless images have no shell:** inspect a pod with `kubectl debug <pod> --image=busybox:1.37 --target=<container> --profile=sysadmin`, and read metrics via `kubectl port-forward`.
+- **Vector at stdin EOF:** with a `stdin` source, closing stdin and letting vector exit can lose the last event on a loaded machine (CI, `-race`). Run vector from Go with `vectorrun.Stream`, which keeps stdin open until the expected output has arrived.
 - **Vector `dedupe`:** a missing match field counts as a value, so every event without it is a "duplicate" of the first. Route those around it.
 - **Vector timing:** its metrics endpoint comes up a few seconds after the pod is Ready. On shutdown it waits up to the 60 s grace period to drain sinks, which makes rolling back a stuck sink slow.
 - **Kafka source counts:** a new team's Kafka source has its own consumer group, so its events flow from the canary pod before promotion.
