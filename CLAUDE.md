@@ -5,8 +5,8 @@ Spillway is a Kubernetes log platform: one `LogPipeline` spec per team becomes a
 ## Where the state lives
 
 - **Progress:** [`docs/plan.md`](docs/plan.md) has the milestones, the gate for each, and a checkbox per work item. Each item is a GitHub issue titled `[Mx.y] …` with its acceptance criteria. `gh issue list` shows what's open.
-- **Decisions:** [`docs/adr/`](docs/adr). 0001: validation with Vector bundled in the operator image. 0002: canary rollout via StatefulSet partition, quarantine and last-good specs. 0003: redaction on by default, with boundary-free patterns. 0004: pod logs parsed, with only the feeder stamp trusted from an app's `spillway`.
-- **Measurements:** [`docs/results/`](docs/results): the M1 baseline, the M2 gate run, M3.2's redaction false positives and leak check, and M3.3's sampling, dedupe and per-team drops.
+- **Decisions:** [`docs/adr/`](docs/adr). 0001: validation with Vector bundled in the operator image. 0002: canary rollout via StatefulSet partition, quarantine and last-good specs. 0003: redaction on by default, with boundary-free patterns. 0004: pod logs parsed, with only the feeder stamp trusted from an app's `spillway`. 0005: budgets split evenly across the aggregators, over a 10 s window.
+- **Measurements:** [`docs/results/`](docs/results): the M1 baseline, the M2 gate run, M3.2's redaction false positives and leak check, M3.3's sampling, dedupe and per-team drops, and M3.4's budgets.
 - **Why something is the way it is:** the PR descriptions (`gh pr view N`) record the design, what testing found, and known limitations.
 
 ## Workflow for a work item
@@ -44,6 +44,7 @@ Spillway is a Kubernetes log platform: one `LogPipeline` spec per team becomes a
 - **Renderer** (`internal/render`): all LogPipelines → one aggregator config, deterministically.
   - Components are named `<team>_<stage>`; sinks (`hot_loki`, `cold_s3`) are shared. `metrics_by_team` tags each team component's internal metrics with `team`, so drops and throughput sum per team.
   - Stages: `in` → `ids`/`dedupe` (on `spillway.event_id`; events without one bypass it) → `redact` → cold split → `sample` → `budget` → `hot`.
+  - `budget` is a throttle per aggregator pod, with no shared state: each gets `floor(maxEventsPerSec / replicas)` over a 10 s window (`BudgetPerPod`). The operator renders with the StatefulSet's replica count; `render.DefaultOptions` (and so `spillwayctl` and the goldens) assumes 2.
   - Data no team claims takes the platform paths (`wikimedia → redact_feed → stamp → loki`, `agents → pod_logs → redact_pods → loki_pods`), which mask every pattern. Claimed topics and namespaces leave them.
   - With no pipelines, it renders the platform config (`vector/aggregator/vector.yaml`): M1 plus redaction.
   - It also generates `vector test` cases for every transform it emits (`tests.go`), and a Go test enforces that every transform is covered.
@@ -81,5 +82,6 @@ Spillway is a Kubernetes log platform: one `LogPipeline` spec per team becomes a
 - **#43:** a rolled-back canary leaves new sinks' disk buffers orphaned. It's visible (metric, warning, status) but not drained.
 - **False positives on other data:** measured only on Wikimedia (0.015% of events). Re-measure on GitHub events in M3.7.
 - **Dedupe is per pod and in memory:** it catches feeder replays (same `event_id` and Kafka key, so same partition and aggregator), but not duplicates from a Kafka rebalance or an aggregator restart, which land on a pod with an empty cache. M4's chaos runs still dedupe by event ID when they count.
+- **Budgets under-deliver on uneven load:** a team whose events all reach one aggregator gets 1/replicas of its budget. Pod logs follow the agents' long-lived gRPC connections, which can all point at one pod (measured: 5.0/s against 10). Kafka teams spread by partition. ADR 0005 lists the fixes.
 - **Level from free text:** a text line whose logfmt part says `level=debug` is sampled as debug even if the app meant something else; JSON and klog lines are unambiguous.
 - **Canary checks:** per-team drop-rate checks join the comparison in M3. The operator's gate runs `vector validate`, not the generated tests, which run in CI and `spillwayctl`.

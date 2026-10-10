@@ -142,9 +142,9 @@ transforms:
   content_budget:
     inputs:
     - content_redact
-    threshold: 100
+    threshold: 500
     type: throttle
-    window_secs: 1
+    window_secs: 10
   content_dedupe:
     cache:
       num_events: 10000
@@ -193,9 +193,9 @@ transforms:
   edits_budget:
     inputs:
     - edits_sample
-    threshold: 25
+    threshold: 120
     type: throttle
-    window_secs: 1
+    window_secs: 10
   edits_dedupe:
     cache:
       num_events: 10000
@@ -261,9 +261,9 @@ transforms:
   payments_budget:
     inputs:
     - payments_sample
-    threshold: 500
+    threshold: 2500
     type: throttle
-    window_secs: 1
+    window_secs: 10
   payments_dedupe:
     cache:
       num_events: 10000

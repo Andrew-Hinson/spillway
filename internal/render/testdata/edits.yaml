@@ -99,9 +99,9 @@ transforms:
   edits_budget:
     inputs:
     - edits_sample
-    threshold: 25
+    threshold: 120
     type: throttle
-    window_secs: 1
+    window_secs: 10
   edits_dedupe:
     cache:
       num_events: 10000

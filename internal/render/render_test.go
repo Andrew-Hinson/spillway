@@ -311,3 +311,34 @@ func mustVRL(t *testing.T, patterns []spillwayv1alpha1.RedactionPattern) string 
 	}
 	return vrl
 }
+
+func TestBudgetIsSplitAcrossAggregators(t *testing.T) {
+	for _, c := range []struct {
+		budget      int32
+		aggregators int
+		want        int32
+	}{
+		{25, 2, 12}, // rounded down: 24/s in all, never over
+		{30, 2, 15},
+		{30, 3, 10},
+		{30, 1, 30},
+		{30, 0, 30}, // unset is one aggregator
+		{1, 2, 1},   // can't split below 1/s per pod
+	} {
+		got := BudgetPerPod(c.budget, c.aggregators)
+		if got != c.want {
+			t.Errorf("BudgetPerPod(%d, %d) = %d, want %d", c.budget, c.aggregators, got, c.want)
+		}
+		if c.budget >= int32(max(c.aggregators, 1)) && got*int32(max(c.aggregators, 1)) > c.budget {
+			t.Errorf("BudgetPerPod(%d, %d) = %d: the aggregators together allow more than the budget", c.budget, c.aggregators, got)
+		}
+	}
+
+	p := loadExamples(t)["edits"] // maxEventsPerSec: 25
+	opts := DefaultOptions()
+	opts.Aggregators = 2
+	budget := renderedTransformsWith(t, p, opts)["edits_budget"].(map[string]any)
+	if budget["threshold"] != 120.0 || budget["window_secs"] != 10.0 {
+		t.Errorf("edits_budget on 2 aggregators = %v, want 120 events per 10 s (12/s per pod)", budget)
+	}
+}

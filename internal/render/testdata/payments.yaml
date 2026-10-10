@@ -160,9 +160,9 @@ transforms:
   payments_budget:
     inputs:
     - payments_sample
-    threshold: 500
+    threshold: 2500
     type: throttle
-    window_secs: 1
+    window_secs: 10
   payments_dedupe:
     cache:
       num_events: 10000

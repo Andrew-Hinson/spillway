@@ -824,3 +824,27 @@ func TestRollbackReportsOrphanedBuffers(t *testing.T) {
 		"events cold_s3 buffered on the canary pod weren't delivered (issue #43)")
 	e.expectReady("search", metav1.ConditionTrue, spillwayv1alpha1.ReasonRolledOut, "")
 }
+
+// Each aggregator enforces its share of a team's budget, so the operator
+// renders with the StatefulSet's replica count, and scaling it rolls out
+// config with the new share.
+func TestBudgetIsSharedAcrossAggregators(t *testing.T) {
+	e := newEnv(t, true, true)
+	e.pipeline("search", "search", "search", false)
+	e.setBudget("search", 30)
+	e.promote()
+	if !strings.Contains(e.config(), "threshold: 150\n") { // 15/s per pod, over a 10 s window
+		t.Fatalf("2 aggregators: want each to allow 15/s of a 30/s budget:\n%s", e.config())
+	}
+	before := e.running()
+
+	sts := e.sts()
+	three := int32(3)
+	sts.Spec.Replicas = &three
+	must(t, k8s.Update(e.ctx, sts))
+	e.settle()
+	e.reconcile()
+	if e.running() == before || !strings.Contains(e.config(), "threshold: 100\n") {
+		t.Fatalf("scaled to 3: want a new config allowing 10/s per pod:\n%s", e.config())
+	}
+}

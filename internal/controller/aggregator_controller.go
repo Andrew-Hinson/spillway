@@ -90,7 +90,11 @@ func (r *AggregatorReconciler) Reconcile(ctx context.Context, _ ctrl.Request) (c
 		return ctrl.Result{}, err
 	}
 
-	cfg, accepted, err := r.validated(ctx, accepted, invalid)
+	// Each aggregator enforces its share of a team's budget, so the config
+	// depends on how many there are; scaling the StatefulSet re-renders it.
+	opts := r.Options
+	opts.Aggregators = int(replicasOf(&sts))
+	cfg, accepted, err := r.validated(ctx, opts, accepted, invalid)
 	var rejected *validate.Error
 	if errors.As(err, &rejected) {
 		// Not even the pipelines that pass alone combine into a config Vector
@@ -253,9 +257,9 @@ func (r *AggregatorReconciler) now() time.Time {
 // are moved to invalid, and the rest are rendered and checked again. It
 // returns the config to apply and the pipelines in it, or a *validate.Error
 // if the remaining pipelines still don't validate together.
-func (r *AggregatorReconciler) validated(ctx context.Context, accepted []spillwayv1alpha1.LogPipeline,
+func (r *AggregatorReconciler) validated(ctx context.Context, opts render.Options, accepted []spillwayv1alpha1.LogPipeline,
 	invalid map[types.UID]string) ([]byte, []spillwayv1alpha1.LogPipeline, error) {
-	cfg, err := render.Render(accepted, r.Options)
+	cfg, err := render.Render(accepted, opts)
 	if err != nil {
 		// partition already rendered this exact set successfully.
 		return nil, nil, fmt.Errorf("rendering accepted pipelines: %w", err)
@@ -268,7 +272,7 @@ func (r *AggregatorReconciler) validated(ctx context.Context, accepted []spillwa
 
 	var keep []spillwayv1alpha1.LogPipeline
 	for _, p := range accepted {
-		solo, err := render.Render([]spillwayv1alpha1.LogPipeline{p}, r.Options)
+		solo, err := render.Render([]spillwayv1alpha1.LogPipeline{p}, opts)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -286,7 +290,7 @@ func (r *AggregatorReconciler) validated(ctx context.Context, accepted []spillwa
 	if len(keep) == len(accepted) {
 		return nil, nil, rejected
 	}
-	if cfg, err = render.Render(keep, r.Options); err != nil {
+	if cfg, err = render.Render(keep, opts); err != nil {
 		return nil, nil, err
 	}
 	return cfg, keep, r.Validator.Validate(ctx, cfg)

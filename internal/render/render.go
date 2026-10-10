@@ -10,7 +10,8 @@
 //	<team>_redact       mask PII             (unless redaction.disabled is set)
 //	    ├─► cold_s3     the complete redacted stream   (if routing.cold)
 //	    └─► <team>_sample   keep a share per level     (if sampling is set)
-//	        <team>_budget   cap the event rate         (if budget is set)
+//	        <team>_budget   cap the event rate, split  (if budget is set)
+//	                        across the aggregators
 //	        <team>_hot      stamp pre-sink latency ─► hot_loki   (if routing.hot)
 //
 // Cold storage keeps everything; sampling and the budget only thin the hot
@@ -55,6 +56,9 @@ type Options struct {
 	Cold *ColdStorage
 	// Platform is what flows when no team claims it.
 	Platform Platform
+	// Aggregators is how many aggregator pods run the config. Each enforces
+	// its own share of a team's budget; 0 is taken as 1.
+	Aggregators int
 }
 
 // Platform configures the default paths for unclaimed data.
@@ -85,6 +89,9 @@ func DefaultOptions() Options {
 			Region:   "us-east-1",
 		},
 		Platform: Platform{FeederTopic: "wikimedia.recentchange", PodLogs: true},
+		// vector/aggregator/values.yaml runs two; the operator uses the
+		// StatefulSet's actual replica count.
+		Aggregators: 2,
 	}
 }
 
@@ -298,8 +305,8 @@ func (c *config) addPipeline(p spillwayv1alpha1.LogPipeline, opts Options) (hotO
 		c.transforms[id("budget")] = map[string]any{
 			"type":        "throttle",
 			"inputs":      head,
-			"threshold":   b.MaxEventsPerSec,
-			"window_secs": 1,
+			"threshold":   BudgetPerPod(b.MaxEventsPerSec, opts.Aggregators) * budgetWindowSecs,
+			"window_secs": budgetWindowSecs,
 		}
 		head = []string{id("budget")}
 		c.testBudget(id("budget"))
@@ -307,6 +314,27 @@ func (c *config) addPipeline(p spillwayv1alpha1.LogPipeline, opts Options) (hotO
 	c.transforms[id("hot")] = remap(head, stampVRL)
 	c.testStamp(id("hot"))
 	return []string{id("hot")}, coldOut, nil
+}
+
+// budgetWindowSecs is the throttle's window. Events reach an aggregator in
+// batches (agent batches, Kafka fetches) that can be more than a second apart,
+// and a throttle lets at most one window's threshold through at once, so a
+// 1 s window wastes the budget between batches: with 10/s allowed and
+// batches 1–2.5 s apart, vector passed 6.2/s. A 10 s window absorbs that and
+// holds the same average, at the cost of letting a team that was idle send
+// up to 10 s of budget at once (docs/adr/0005).
+const budgetWindowSecs = 10
+
+// BudgetPerPod is each aggregator's share of a team's maxEventsPerSec. Every
+// pod runs its own throttle and there's no shared state between them, so the
+// budget is split evenly, rounding down so the team-wide total never exceeds
+// the spec. A budget smaller than the number of pods can't be split and
+// becomes 1/s per pod.
+func BudgetPerPod(maxEventsPerSec int32, aggregators int) int32 {
+	if aggregators < 1 {
+		aggregators = 1
+	}
+	return max(1, maxEventsPerSec/int32(aggregators))
 }
 
 // dedupeCache is how many recent event IDs each team remembers. At

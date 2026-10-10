@@ -122,9 +122,9 @@ transforms:
   content_budget:
     inputs:
     - content_redact
-    threshold: 100
+    threshold: 500
     type: throttle
-    window_secs: 1
+    window_secs: 10
   content_dedupe:
     cache:
       num_events: 10000
