@@ -85,7 +85,7 @@ Each line is one GitHub issue: the title, then the acceptance criteria after the
 ### M3 — Policy features
 
 1. [x] Fixture injector — feeder flag or small producer that mixes known SSN, email, phone and member-ID records into the live streams at a set rate, tagged so they can be counted
-2. [ ] Redaction library — SSN, email, phone and member-ID patterns; fixtures with positive and negative cases; zero injected fixture values found in the hot sink
+2. [x] Redaction library — SSN, email, phone and member-ID patterns; fixtures with positive and negative cases; zero injected fixture values found in the hot sink
 3. [ ] Sampling and dedup — per-level sample rates from the spec; dropped counts visible per team
 4. [ ] Per-team budgets — throttle transform from `maxEventsPerSec`; over-budget events counted, not silently lost
 5. [ ] Cold path to object storage — MinIO locally, S3 in cloud; partitioned by team and date, compressed

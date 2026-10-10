@@ -25,7 +25,7 @@ sinks:
     framing:
       method: newline_delimited
     inputs:
-    - content_in_wikimedia
+    - content_redact
     key_prefix: team={{ spillway.team }}/date=%Y-%m-%d/
     region: us-east-1
     type: aws_s3
@@ -61,7 +61,7 @@ sinks:
       codec: json
     endpoint: http://loki.observability.svc:3100
     inputs:
-    - pod_logs
+    - redact_pods
     labels:
       container: '{{ container }}'
       namespace: '{{ namespace }}'
@@ -121,7 +121,7 @@ sources:
 transforms:
   content_budget:
     inputs:
-    - content_in_wikimedia
+    - content_redact
     threshold: 100
     type: throttle
     window_secs: 1
@@ -145,6 +145,15 @@ transforms:
       .spillway.team = "content"
       .spillway.source = "wikimedia"
     type: remap
+  content_redact:
+    inputs:
+    - content_in_wikimedia
+    source: |
+      # Redact every string in the event except Spillway's own metadata.
+      meta = .spillway
+      . = redact(., filters: [r'[\p{L}\p{N}._%+-]+(?:@|%40)[\p{L}\p{N}.-]+\.\p{L}{2,}', r'MBR-\d{8}', r'(?:\+1[ .-]?)?(?:\(\d{3}\) ?|\d{3}[ .-])\d{3}[ .-]\d{4}', r'\d{3}-\d{2}-\d{4}'])
+      if meta != null { .spillway = meta }
+    type: remap
   pod_logs:
     inputs:
     - agents
@@ -159,6 +168,15 @@ transforms:
         "pod": k.pod_name,
         "container": k.container_name
       }
+    type: remap
+  redact_pods:
+    inputs:
+    - pod_logs
+    source: |
+      # Redact every string in the event except Spillway's own metadata.
+      meta = .spillway
+      . = redact(., filters: [r'[\p{L}\p{N}._%+-]+(?:@|%40)[\p{L}\p{N}.-]+\.\p{L}{2,}', r'MBR-\d{8}', r'(?:\+1[ .-]?)?(?:\(\d{3}\) ?|\d{3}[ .-])\d{3}[ .-]\d{4}', r'\d{3}-\d{2}-\d{4}'])
+      if meta != null { .spillway = meta }
     type: remap
   team_latency_events:
     condition: exists(.spillway.pipeline_latency_ms)

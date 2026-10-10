@@ -14,6 +14,7 @@
 #   make lint        lint the Go code (pinned golangci-lint in ./bin)
 #   make vector-check validate and unit-test the Vector config (in Docker)
 #   make baseline    measure volume and latency over the last 15m (needs python3)
+#   make leak-check  search the hot sink for injected fixture values (needs python3)
 #
 # Only Docker, curl and make are needed on the host. The cluster's kubeconfig is
 # written to ./.kubeconfig so your ~/.kube/config is never touched:
@@ -223,6 +224,20 @@ baseline: $(KUBECTL) ## Print volume and latency over the last WINDOW (default 1
 	@$(KUBECTL) -n observability port-forward svc/prometheus-server 9090:80 >/dev/null 2>&1 & pf=$$!; \
 		trap 'kill $$pf' EXIT; sleep 2; \
 		python3 bench/baseline.py --window $(or $(WINDOW),15m)
+
+.PHONY: leak-check
+leak-check: $(KUBECTL) ## Search the hot sink for injected fixture values over WINDOW (default 15m); fails on any leak
+	@$(KUBECTL) -n observability port-forward svc/loki 3100:3100 >/dev/null 2>&1 & pf1=$$!; \
+		$(KUBECTL) -n observability port-forward svc/prometheus-server 9090:80 >/dev/null 2>&1 & pf2=$$!; \
+		trap 'kill $$pf1 $$pf2' EXIT; sleep 2; \
+		python3 bench/leakcheck.py --window $(or $(WINDOW),15m)
+
+.PHONY: redaction-fp
+redaction-fp: $(VECTOR) ## Measure redaction false positives on DURATION seconds (default 600) of the live Wikimedia stream
+	@mkdir -p bin/samples
+	curl -sN --max-time $(or $(DURATION),600) -A "spillway-redactfp/0.1 (https://github.com/Andrew-Hinson/spillway)" \
+		https://stream.wikimedia.org/v2/stream/recentchange | sed -un 's/^data: //p' > bin/samples/recentchange.ndjson || true
+	go run ./bench/redactfp -vector-bin $(VECTOR) < bin/samples/recentchange.ndjson
 
 .PHONY: m2-gate
 m2-gate: $(KUBECTL) spillwayctl ## Run the M2 gate demo against a fresh `make up` (see docs/results/m2-gate.md)

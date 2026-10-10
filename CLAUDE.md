@@ -5,8 +5,8 @@ Spillway is a Kubernetes log platform: one `LogPipeline` spec per team becomes a
 ## Where the state lives
 
 - **Progress:** [`docs/plan.md`](docs/plan.md) has the milestones, the gate for each, and a checkbox per work item. Each item is a GitHub issue titled `[Mx.y] …` with its acceptance criteria. `gh issue list` shows what's open.
-- **Decisions:** [`docs/adr/`](docs/adr). 0001: validation with Vector bundled in the operator image. 0002: canary rollout via StatefulSet partition, quarantine and last-good specs.
-- **Measurements:** [`docs/results/`](docs/results): the M1 baseline and the M2 gate run.
+- **Decisions:** [`docs/adr/`](docs/adr). 0001: validation with Vector bundled in the operator image. 0002: canary rollout via StatefulSet partition, quarantine and last-good specs. 0003: redaction on by default, with boundary-free patterns.
+- **Measurements:** [`docs/results/`](docs/results): the M1 baseline, the M2 gate run, and M3.2's redaction false positives and leak check.
 - **Why something is the way it is:** the PR descriptions (`gh pr view N`) record the design, what testing found, and known limitations.
 
 ## Workflow for a work item
@@ -34,21 +34,23 @@ Spillway is a Kubernetes log platform: one `LogPipeline` spec per team becomes a
 | `make spillwayctl` | CLI: `bin/spillwayctl validate --vector-bin bin/vector examples/` |
 | `make fixtures RATE=N` | Fictional-PII injector (opt-in) |
 | `make m2-gate`, `make baseline` | Recorded measurements; see `docs/results` |
+| `make leak-check WINDOW=15m` | Search every hot-sink stream for fixture values; fails on a leak or if no fixtures arrived |
+| `make redaction-fp DURATION=600` | Capture live Wikimedia events and count what each redaction pattern masks |
 | `make tools` | Pinned kind, kubectl, helm, golangci-lint, controller-gen, setup-envtest and vector, in `./bin` |
 
 ## How the system fits together
 
 - **Renderer** (`internal/render`): all LogPipelines → one aggregator config, deterministically.
   - Components are named `<team>_<stage>`; sinks (`hot_loki`, `cold_s3`) are shared.
-  - Data no team claims takes the M1 platform paths (`wikimedia → stamp → loki`, `agents → pod_logs → loki_pods`). Claimed topics and namespaces leave them, so redaction can't be bypassed.
-  - With no pipelines, it renders exactly the M1 config.
+  - Data no team claims takes the platform paths (`wikimedia → redact_feed → stamp → loki`, `agents → pod_logs → redact_pods → loki_pods`), which mask every pattern. Claimed topics and namespaces leave them.
+  - With no pipelines, it renders the platform config (`vector/aggregator/vector.yaml`): M1 plus redaction.
   - It also generates `vector test` cases for every transform it emits (`tests.go`), and a Go test enforces that every transform is covered.
 - **Operator** (`internal/controller`): renders → applies quarantine → `vector validate` (cached) → writes `vector-<hash>.yaml` to the ConfigMap → canaries via partition → promotes or rolls back.
   - State lives in StatefulSet annotations (`spillway.dev/*`).
   - Pods select their config file through `$(SPILLWAY_CONFIG_SUFFIX)` from a pod annotation.
   - Cold storage is **off** unless `--cold-bucket` is set: MinIO arrives in M3.5, and until then cold-routed pipelines are `Invalid`.
 - **Field ownership:** the operator owns only fields Helm never sets: the config-suffix pod annotation, `updateStrategy.partition`, and its own annotations. Never `kubectl set`/`patch` a Helm-owned field, or the next `helm upgrade` fails with a server-side-apply conflict. If it happens, set the field back to Helm's value.
-- **Redaction** (`internal/redact`): VRL `redact()` filters. SSN is a deliberately broad `\b\d{3}-\d{2}-\d{4}\b`, because VRL's built-in SSN matcher misses valid SSNs.
+- **Redaction** (`internal/redact`): VRL `redact()` filters, on by default (a spec opts out with `redaction: {disabled: true}`). The patterns have no `\b`: escaped JSON in pod logs (`\n123-45-6789`) defeats word boundaries, and VRL's regex has no lookbehind. `testdata/corpus.yaml` holds the positive and negative cases. Run a candidate pattern against live data with `go run ./bench/redactfp -filter name=r'…'` before changing one.
 - **Canary timing:** each config change takes ~2.5–4 min to reach both aggregators (2 min bake plus two restarts). Bake ≥ 2× the longest sink batch timeout. Error allowance is max(5, 0.1% of events).
 
 ## Testing expectations
@@ -71,7 +73,6 @@ Spillway is a Kubernetes log platform: one `LogPipeline` spec per team becomes a
 ## Open threads
 
 - **#43:** a rolled-back canary leaves new sinks' disk buffers orphaned. It's visible (metric, warning, status) but not drained.
-- **SSN false positives:** the broad SSN pattern's false-positive rate is unmeasured; M3.2 should measure it.
+- **False positives on other data:** measured only on Wikimedia (0.015% of events). Re-measure on GitHub events in M3.7.
 - **Pod logs aren't parsed:** they arrive as an unparsed `message` string, so their levels can't be sampled and fixture tags sit inside the message.
-- **Fixtures through the platform path:** the M1 platform path doesn't redact, so fixtures there land in Loki unredacted. That's why `make fixtures` is opt-in.
 - **Canary checks:** per-team drop-rate checks join the comparison in M3. The operator's gate runs `vector validate`, not the generated tests, which run in CI and `spillwayctl`.

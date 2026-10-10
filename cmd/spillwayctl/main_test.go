@@ -67,7 +67,7 @@ func TestValidateAcceptsExamples(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("exit %d\n%s%s", code, out, errOut)
 	}
-	for _, want := range []string{"examples/payments.yaml (payments): ok", "render: ok (4 pipelines)", "vector validate: ok", "vector test: ok (38 tests)"} {
+	for _, want := range []string{"examples/payments.yaml (payments): ok", "render: ok (4 pipelines)", "vector validate: ok", "vector test: ok (59 tests)"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("output lacks %q:\n%s", want, out)
 		}

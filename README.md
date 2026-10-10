@@ -11,7 +11,7 @@ Spillway is a Kubernetes log platform that will turn a short YAML spec per team 
 - **Canaried:** new config goes to one aggregator first, and is promoted only if its error rate and delivery hold.
 - **Reported:** each pipeline is marked Ready, or Invalid or CanaryFailed with the reason.
 
-The [M2 gate run](docs/results/m2-gate.md) shows a team's first event queryable 5 s after `kubectl apply`, and three of three bad configs blocked: one at apply time, one Invalid, and one rolled back by the canary. Config changes go out as canaries ([ADR 0002](docs/adr/0002-canary-rollout-with-statefulset-partition.md)), and `spillwayctl` runs the same checks without a cluster. **M3 (policy features) is under way.** A fixture injector mixes known, fictional PII into the live streams, so redaction can be measured. See the [build plan](docs/plan.md).
+The [M2 gate run](docs/results/m2-gate.md) shows a team's first event queryable 5 s after `kubectl apply`, and three of three bad configs blocked: one at apply time, one Invalid, and one rolled back by the canary. Config changes go out as canaries ([ADR 0002](docs/adr/0002-canary-rollout-with-statefulset-partition.md)), and `spillwayctl` runs the same checks without a cluster. **M3 (policy features) is under way.** Redaction is on by default, for teams and for unclaimed data ([ADR 0003](docs/adr/0003-redaction-on-by-default.md)). A fixture injector mixes known, fictional PII into the live streams, and `make leak-check` searches the hot sink for it: [0 of 5,054 fixtures leaked](docs/results/m3.2-redaction.md), and the patterns change 0.015% of live Wikimedia events. See the [build plan](docs/plan.md).
 
 ## Architecture
 
@@ -26,7 +26,7 @@ pod logs on every node ──► Vector agent (DaemonSet) ───────�
 - **Aggregator** ([`vector/aggregator`](vector/aggregator)): consumes from Kafka and stamps each event with a pre-sink time, so feeder-to-sink latency can be measured. It writes to Loki through a 1 GiB disk buffer and commits Kafka offsets only once events are in that buffer.
 - **Agent** ([`vector/agent`](vector/agent)): runs on every node, tails pod logs, and forwards them to the aggregator. The aggregator writes them to Loki through a separate sink, labelled `namespace`, `pod` and `container`.
 - **Operator** ([`cmd/operator`](cmd/operator), [`internal/controller`](internal/controller)): watches `LogPipeline` resources, one per team. On every change it renders all of them, validates the result with the Vector binary bundled in its image, and writes it to the aggregator's ConfigMap ([ADR 0001](docs/adr/0001-validate-in-the-operator-image.md)). It then canaries the new config on one of the two aggregator pods for 2 minutes. It compares that pod's errors and sink delivery with the other pod's, then promotes or rolls back, and sets each pipeline's Ready condition. A change whose canary fails is quarantined: that pipeline keeps running its last good spec, and other teams' changes still roll out. If several changes fail together, each is retried alone, and only the ones that fail alone stay quarantined. A pipeline Vector rejects is marked Invalid with Vector's error. If the pipelines only fail together, nothing is applied and the aggregator keeps its last valid config. If two pipelines conflict, the older one keeps the team or namespace and the newer one is marked Invalid. Manual edits to the ConfigMap are reverted.
-- **Renderer** ([`internal/render`](internal/render)): turns LogPipelines into one aggregator config. Each team's events are tagged and redacted, then split. Cold storage gets the complete redacted stream. The hot path is sampled and rate-capped before Loki. Sinks are shared, so adding a team doesn't add disk buffers. Data no team claims takes the platform defaults, which are the M1 paths above. A topic or namespace a team claims leaves those paths, so the team's redaction can't be bypassed. With no LogPipelines the render is exactly the M1 pipeline, and [`vector/aggregator/vector.yaml`](vector/aggregator/vector.yaml) is generated from it. The rendered config for each example is checked in under [`internal/render/testdata`](internal/render/testdata) and validated by Vector in CI.
+- **Renderer** ([`internal/render`](internal/render)): turns LogPipelines into one aggregator config. Each team's events are tagged and redacted (every pattern unless the spec says otherwise), then split. Cold storage gets the complete redacted stream. The hot path is sampled and rate-capped before Loki. Sinks are shared, so adding a team doesn't add disk buffers. Data no team claims takes the platform defaults: the M1 paths above, with every PII pattern masked. A topic or namespace a team claims leaves those paths. With no LogPipelines the render is the platform config, and [`vector/aggregator/vector.yaml`](vector/aggregator/vector.yaml) is generated from it. The rendered config for each example is checked in under [`internal/render/testdata`](internal/render/testdata) and validated by Vector in CI.
 - **Self-monitoring**: Prometheus scrapes the feeder and every Vector instance. The *Spillway pipeline* dashboard ([`dashboards/pipeline.json`](dashboards/pipeline.json)) shows throughput, latency, consumer lag, buffer size and errors.
 
 ## Quickstart
@@ -59,7 +59,7 @@ spec:
   sources:
     - name: services
       kubernetes: {namespaces: [payments]}   # or kafka: {topic: ...}
-  redaction: {patterns: [ssn, email, phone, memberId]}
+  redaction: {patterns: [ssn, email, phone, memberId]}   # the default; {disabled: true} opts out
   sampling: {keepPercent: {debug: 0, info: 25}}
   budget: {maxEventsPerSec: 500}
   routing: {hot: true, cold: true}
@@ -117,7 +117,9 @@ Cold storage (MinIO) arrives in M3. Until then, pipelines that route to cold sto
 | `make lint` | golangci-lint |
 | `make vector-check` | `vector validate` and the generated `vector test` suite on the aggregator config and every rendered example, plus `vector validate` on the agent config |
 | `make baseline` | Volume and latency over the last 15 minutes, as Markdown |
-| `make fixtures` | Inject known, fictional PII into the live streams (`RATE=` per second, default 1): recentchange-shaped events into the Wikimedia topic, and JSON log lines in the `fixtures` namespace. Each is tagged `spillway.fixture: {id, pattern}`, so it can be counted in any sink. Opt-in, because the M1 platform path doesn't redact |
+| `make fixtures` | Inject known, fictional PII into the live streams (`RATE=` per second, default 1): recentchange-shaped events into the Wikimedia topic, and JSON log lines in the `fixtures` namespace. Each is tagged `spillway.fixture: {id, pattern}`, so it can be counted in any sink |
+| `make leak-check` | Search every hot-sink stream for fixture values over `WINDOW` (default 15m). Fails on any leak, or if no fixtures arrived |
+| `make redaction-fp` | Capture `DURATION` seconds of the live Wikimedia stream and report what each redaction pattern masks |
 | `make help` | Every target |
 
 CI runs `lint`, `generate`, `test` and `vector-check` on every PR.
@@ -140,7 +142,7 @@ cmd/operator/        operator entrypoint and Dockerfile
 cmd/spillwayctl/     CLI: validate and render specs without a cluster
 internal/controller/ LogPipeline reconciler
 internal/render/     LogPipeline → Vector config, with golden files
-internal/redact/     PII patterns as VRL redact() filters
+internal/redact/     PII patterns as VRL redact() filters, and the positive/negative corpus
 internal/validate/   vector validate gate for rendered config
 internal/schema/     offline CRD schema validation (same libraries as the API server)
 examples/            example LogPipeline specs
@@ -149,6 +151,6 @@ feeders/fixtures/    fictional-PII fixture injector (Kafka and pod logs)
 vector/              agent and aggregator configs, Helm values, unit tests
 deploy/              kind cluster, platform Helm values, feeder and operator manifests (generated CRD and RBAC)
 dashboards/          Grafana dashboards
-bench/               baseline measurement script
+bench/               measurements: baseline, M2 gate, redaction false positives, fixture leak check
 docs/                build plan, results and ADRs
 ```

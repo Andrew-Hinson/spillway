@@ -5,7 +5,7 @@
 //
 //	<team>_src_<name>   a Kafka source, or a filter on the shared agents source
 //	<team>_in_<name>    tag with team and source; reshape pod logs
-//	<team>_redact       mask PII                       (if redaction is set)
+//	<team>_redact       mask PII             (unless redaction.disabled is set)
 //	    ├─► cold_s3     the complete redacted stream   (if routing.cold)
 //	    └─► <team>_sample   keep a share per level     (if sampling is set)
 //	        <team>_budget   cap the event rate         (if budget is set)
@@ -16,13 +16,16 @@
 // under the team's own component IDs. Sinks are shared by all teams, so the
 // number of disk buffers doesn't grow with the number of teams.
 //
-// Data no team claims takes the platform defaults, which are the M1 pipeline:
-// the feeder topic goes straight to Loki (wikimedia -> stamp -> loki) and pod
-// logs go to Loki labelled by namespace, pod and container (agents ->
-// pod_logs -> loki_pods). A claimed topic or namespace leaves the default
-// path, so a team's redaction can't be bypassed. With no pipelines, Render
-// returns exactly the M1 config: vector/aggregator/vector.yaml is generated
-// from it.
+// Redaction is on by default: a pipeline masks every pattern unless its spec
+// lists fewer or turns redaction off (docs/adr/0003).
+//
+// Data no team claims takes the platform defaults, which are the M1 pipeline
+// with every pattern masked: the feeder topic goes to Loki (wikimedia ->
+// redact_feed -> stamp -> loki) and pod logs go to Loki labelled by
+// namespace, pod and container (agents -> pod_logs -> redact_pods ->
+// loki_pods). A claimed topic or namespace leaves the default path. With no
+// pipelines, Render returns the platform config: vector/aggregator/vector.yaml
+// is generated from it.
 package render
 
 import (
@@ -240,17 +243,14 @@ func (c *config) addPipeline(p spillwayv1alpha1.LogPipeline, opts Options) (hotO
 
 	// Everything after this point sees one merged stream per team.
 	head := inputs
-	if r := p.Spec.Redaction; r != nil && len(r.Patterns) > 0 {
-		filters, err := redact.Filters(r.Patterns)
+	if patterns := redactionPatterns(p); len(patterns) > 0 {
+		vrl, err := redact.VRL(patterns)
 		if err != nil {
 			return nil, nil, err
 		}
-		c.transforms[id("redact")] = remap(head, fmt.Sprintf(
-			"# Redact every string in the event except Spillway's own metadata.\n"+
-				"meta = .spillway\n. = redact(., filters: [%s])\n.spillway = meta\n",
-			strings.Join(filters, ", ")))
+		c.transforms[id("redact")] = remap(head, vrl)
 		head = []string{id("redact")}
-		c.testRedact(id("redact"), r.Patterns)
+		c.testRedact(id("redact"), patterns)
 	}
 	if cold(p) {
 		coldOut = head
@@ -361,9 +361,11 @@ func (c *config) addPlatform(pipelines []spillwayv1alpha1.LogPipeline, opts Opti
 		}
 		c.transforms["pod_logs"] = remap([]string{input}, podLogVRL)
 		c.testPlatformPodLogs("pod_logs")
+		// Unclaimed data gets the strictest policy: no team has said it's PII-free.
+		c.addPlatformRedact("redact_pods", "pod_logs")
 		c.sinks["loki_pods"] = map[string]any{
 			"type":     "loki",
-			"inputs":   []string{"pod_logs"},
+			"inputs":   []string{"redact_pods"},
 			"endpoint": opts.LokiEndpoint,
 			"encoding": map[string]any{"codec": "json"},
 			// Pod names change on every rollout, but a local cluster runs few
@@ -389,7 +391,8 @@ func (c *config) addPlatform(pipelines []spillwayv1alpha1.LogPipeline, opts Opti
 		// The M1 consumer group predates teams and started from the oldest
 		// retained event; it now resumes from its committed offsets.
 		"earliest")
-	c.transforms["stamp"] = remap([]string{"wikimedia"}, "del(.source_type)\n"+stampVRL)
+	c.addPlatformRedact("redact_feed", "wikimedia")
+	c.transforms["stamp"] = remap([]string{"redact_feed"}, "del(.source_type)\n"+stampVRL)
 	c.testStamp("stamp")
 	c.transforms["latency_metrics"] = map[string]any{
 		"type":    "log_to_metric",
@@ -414,6 +417,17 @@ func (c *config) addPlatform(pipelines []spillwayv1alpha1.LogPipeline, opts Opti
 		"acknowledgements": map[string]any{"enabled": true},
 	}
 	return true
+}
+
+// addPlatformRedact masks every pattern. Its ID can't clash with a team's
+// components: those are <team>_<stage>, and "feed" and "pods" aren't stages.
+func (c *config) addPlatformRedact(id, input string) {
+	vrl, err := redact.VRL(redact.All())
+	if err != nil {
+		panic(err) // every built-in pattern has a filter
+	}
+	c.transforms[id] = remap([]string{input}, vrl)
+	c.testRedact(id, redact.All())
 }
 
 func kafkaSource(opts Options, group, topic, offsetReset string) map[string]any {
@@ -461,6 +475,19 @@ func remap(inputs []string, source string) map[string]any {
 
 func diskBuffer(bytes int) map[string]any {
 	return map[string]any{"type": "disk", "max_size": bytes, "when_full": "block"}
+}
+
+// redactionPatterns returns the patterns a pipeline masks: every one unless
+// the spec lists some, and none if it turns redaction off.
+func redactionPatterns(p spillwayv1alpha1.LogPipeline) []spillwayv1alpha1.RedactionPattern {
+	r := p.Spec.Redaction
+	switch {
+	case r == nil || (!r.Disabled && len(r.Patterns) == 0):
+		return redact.All()
+	case r.Disabled:
+		return nil
+	}
+	return r.Patterns
 }
 
 func hot(p spillwayv1alpha1.LogPipeline) bool {

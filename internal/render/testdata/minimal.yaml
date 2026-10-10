@@ -57,7 +57,7 @@ sinks:
       codec: json
     endpoint: http://loki.observability.svc:3100
     inputs:
-    - pod_logs
+    - redact_pods
     labels:
       container: '{{ container }}'
       namespace: '{{ namespace }}'
@@ -142,9 +142,27 @@ transforms:
         "container": k.container_name
       }
     type: remap
+  redact_feed:
+    inputs:
+    - wikimedia
+    source: |
+      # Redact every string in the event except Spillway's own metadata.
+      meta = .spillway
+      . = redact(., filters: [r'[\p{L}\p{N}._%+-]+(?:@|%40)[\p{L}\p{N}.-]+\.\p{L}{2,}', r'MBR-\d{8}', r'(?:\+1[ .-]?)?(?:\(\d{3}\) ?|\d{3}[ .-])\d{3}[ .-]\d{4}', r'\d{3}-\d{2}-\d{4}'])
+      if meta != null { .spillway = meta }
+    type: remap
+  redact_pods:
+    inputs:
+    - pod_logs
+    source: |
+      # Redact every string in the event except Spillway's own metadata.
+      meta = .spillway
+      . = redact(., filters: [r'[\p{L}\p{N}._%+-]+(?:@|%40)[\p{L}\p{N}.-]+\.\p{L}{2,}', r'MBR-\d{8}', r'(?:\+1[ .-]?)?(?:\(\d{3}\) ?|\d{3}[ .-])\d{3}[ .-]\d{4}', r'\d{3}-\d{2}-\d{4}'])
+      if meta != null { .spillway = meta }
+    type: remap
   search_hot:
     inputs:
-    - search_in_pods
+    - search_redact
     source: |
       sink_at = now()
       .spillway.sink_at = sink_at
@@ -170,6 +188,15 @@ transforms:
       }
       .spillway = {"team": "search", "source": "pods"}
     type: remap
+  search_redact:
+    inputs:
+    - search_in_pods
+    source: |
+      # Redact every string in the event except Spillway's own metadata.
+      meta = .spillway
+      . = redact(., filters: [r'[\p{L}\p{N}._%+-]+(?:@|%40)[\p{L}\p{N}.-]+\.\p{L}{2,}', r'MBR-\d{8}', r'(?:\+1[ .-]?)?(?:\(\d{3}\) ?|\d{3}[ .-])\d{3}[ .-]\d{4}', r'\d{3}-\d{2}-\d{4}'])
+      if meta != null { .spillway = meta }
+    type: remap
   search_src_pods:
     condition: includes(["search"], .kubernetes.pod_namespace)
     inputs:
@@ -177,7 +204,7 @@ transforms:
     type: filter
   stamp:
     inputs:
-    - wikimedia
+    - redact_feed
     source: |
       del(.source_type)
       sink_at = now()
