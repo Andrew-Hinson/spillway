@@ -90,11 +90,17 @@ func (c *config) testPodIn(id, team, source, namespace string) {
 		append(podLogAsserts(namespace),
 			fmt.Sprintf(`assert_eq!(.spillway.team, %q)`, team),
 			fmt.Sprintf(`assert_eq!(.spillway.source, %q)`, source))...)
+	c.test(id+" parses JSON pod logs and keeps only the trusted stamp", id, podJSONEvent(namespace), id,
+		append(podJSONAsserts(namespace),
+			fmt.Sprintf(`assert_eq!(.spillway.team, %q)`, team),
+			fmt.Sprintf(`assert_eq!(.spillway.source, %q)`, source))...)
 }
 
 func (c *config) testPlatformPodLogs(id string) {
 	c.test(id+" keeps the message and pod identity and drops other metadata", id, podEvent("default"), id,
 		podLogAsserts("default")...)
+	c.test(id+" parses JSON pod logs and keeps only the trusted stamp", id, podJSONEvent("default"), id,
+		append(podJSONAsserts("default"), `assert!(!exists(.spillway.team))`)...)
 }
 
 func (c *config) testUnclaimedPods(id string, claimed []string) {
@@ -185,4 +191,76 @@ func (c *config) testLatencyMetric(id, tag, value string) {
 		`assert_eq!(.name, "pipeline_latency_milliseconds")`,
 		`assert_eq!(.namespace, "spillway")`,
 		fmt.Sprintf(`assert_eq!(.tags.%s, %q)`, tag, value))
+}
+
+// dedupeEvent is an event with a feeder stamp, or none if id is empty.
+func dedupeEvent(id, message string) string {
+	if id == "" {
+		return vrlObject(fmt.Sprintf(`"message": %q`, message))
+	}
+	return vrlObject(fmt.Sprintf(`"message": %q, "spillway": {"event_id": %q}`, message, id))
+}
+
+func (c *config) testDedupe(routeID, dedupeID string) {
+	c.test(routeID+" sends events with an ID to dedupe", routeID, dedupeEvent("e1", "m"), routeID+".with_id",
+		`assert_eq!(.spillway.event_id, "e1")`)
+	c.test(routeID+" sends no event without an ID to dedupe", routeID, dedupeEvent("", "m"), routeID+".with_id")
+	c.test(routeID+" sends events without an ID around dedupe", routeID, dedupeEvent("", "m"), routeID+"._unmatched",
+		`assert_eq!(.message, "m")`)
+	// `vector test` passes an output check if any event meets it, so it
+	// can't show that a repeat is dropped; TestDedupeDropsRepeatedIDs runs
+	// the rendered pair in vector and counts what comes out.
+	c.test(dedupeID+" passes the first copy of an event ID", dedupeID, dedupeEvent("e1", "first"), dedupeID,
+		`assert_eq!(.message, "first")`)
+}
+
+// testTeamMetrics checks that a team component's metric gains the team tag
+// and a shared component's doesn't.
+func (c *config) testTeamMetrics(id, team string) {
+	metric := func(component string) map[string]any {
+		return map[string]any{"insert_at": id, "type": "metric", "metric": map[string]any{
+			"name": "component_discarded_events_total", "kind": "absolute", "counter": map[string]any{"value": 1.0},
+			"tags": map[string]any{"component_id": component, "intentional": "true"},
+		}}
+	}
+	for _, stage := range []string{"sample", "src_x"} {
+		c.tests = append(c.tests, map[string]any{
+			"name":   fmt.Sprintf("%s tags %s_%s's metrics with its team", id, team, stage),
+			"inputs": []any{metric(team + "_" + stage)},
+			"outputs": []any{map[string]any{"extract_from": id, "conditions": []any{map[string]any{"type": "vrl",
+				"source": fmt.Sprintf("assert_eq!(.tags.team, %q)\nassert_eq!(.tags.component_id, %q)\n", team, team+"_"+stage)}}}},
+		})
+	}
+	for _, shared := range []string{"hot_loki", "redact_feed", "team_latency_events", team + "_unknown"} {
+		c.tests = append(c.tests, map[string]any{
+			"name":   fmt.Sprintf("%s leaves %s's metrics without a team", id, shared),
+			"inputs": []any{metric(shared)},
+			"outputs": []any{map[string]any{"extract_from": id, "conditions": []any{map[string]any{"type": "vrl",
+				"source": "assert!(!exists(.tags.team))\n"}}}},
+		})
+	}
+}
+
+// podJSONEvent is a pod log whose line is a JSON object, with a level to
+// normalize, a field that collides with the pod's identity, and a stamp with
+// one trusted and one untrusted field.
+func podJSONEvent(namespace string) string {
+	line := `{"level":"WARNING","msg":"retrying","namespace":"spoofed","spillway":{"event_id":"0b0e7f5e-0c55-4c43-9a51-2d4e4f8c1b0a","team":"other"}}`
+	return vrlObject(fmt.Sprintf(`"message": %q, "stream": "stdout", "kubernetes": {"pod_namespace": %q, "pod_name": "app-0", "container_name": "app", "pod_node_name": "node-1"}`, line, namespace))
+}
+
+// podJSONAsserts check podJSONEvent after the pod-log step. A team step
+// overwrites .spillway.team, so the untrusted value is checked in
+// app_spillway instead.
+func podJSONAsserts(namespace string) []string {
+	return []string{
+		`assert_eq!(.msg, "retrying")`,
+		`assert_eq!(.level, "warn")`,
+		fmt.Sprintf(`assert_eq!(.namespace, %q)`, namespace),
+		`assert_eq!(.app_namespace, "spoofed")`,
+		`assert_eq!(.spillway.event_id, "0b0e7f5e-0c55-4c43-9a51-2d4e4f8c1b0a")`,
+		`assert_eq!(.app_spillway.team, "other")`,
+		`assert!(!exists(.message))`,
+		`assert!(!exists(.kubernetes))`,
+	}
 }

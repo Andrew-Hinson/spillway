@@ -96,7 +96,7 @@ sinks:
     - 30000
     - 60000
     inputs:
-    - internal_metrics
+    - metrics_by_team
     - team_latency_metrics
     type: prometheus_exporter
 sources:
@@ -145,6 +145,15 @@ transforms:
     threshold: 100
     type: throttle
     window_secs: 1
+  content_dedupe:
+    cache:
+      num_events: 10000
+    fields:
+      match:
+      - spillway.event_id
+    inputs:
+    - content_ids.with_id
+    type: dedupe
   content_hot:
     inputs:
     - content_budget
@@ -157,6 +166,12 @@ transforms:
           to_unix_timestamp(produced_at, unit: "milliseconds")
       }
     type: remap
+  content_ids:
+    inputs:
+    - content_in_wikimedia
+    route:
+      with_id: is_string(.spillway.event_id)
+    type: route
   content_in_wikimedia:
     inputs:
     - content_src_wikimedia
@@ -167,7 +182,8 @@ transforms:
     type: remap
   content_redact:
     inputs:
-    - content_in_wikimedia
+    - content_dedupe
+    - content_ids._unmatched
     source: |
       # Redact every string in the event except Spillway's own metadata.
       meta = .spillway
@@ -180,6 +196,15 @@ transforms:
     threshold: 25
     type: throttle
     window_secs: 1
+  edits_dedupe:
+    cache:
+      num_events: 10000
+    fields:
+      match:
+      - spillway.event_id
+    inputs:
+    - edits_ids.with_id
+    type: dedupe
   edits_hot:
     inputs:
     - edits_budget
@@ -192,6 +217,12 @@ transforms:
           to_unix_timestamp(produced_at, unit: "milliseconds")
       }
     type: remap
+  edits_ids:
+    inputs:
+    - edits_in_recentchange
+    route:
+      with_id: is_string(.spillway.event_id)
+    type: route
   edits_in_recentchange:
     inputs:
     - edits_src_recentchange
@@ -202,7 +233,8 @@ transforms:
     type: remap
   edits_redact:
     inputs:
-    - edits_in_recentchange
+    - edits_dedupe
+    - edits_ids._unmatched
     source: |
       # Redact every string in the event except Spillway's own metadata.
       meta = .spillway
@@ -219,12 +251,28 @@ transforms:
       percent = int(get(keep, [level]) ?? null) ?? 100
       if random_int(0, 100) >= percent { abort }
     type: remap
+  metrics_by_team:
+    inputs:
+    - internal_metrics
+    source: |
+      found = parse_regex(string(.tags.component_id) ?? "", r'^(?P<team>[a-z0-9-]+)_(?:src_.+|in_.+|ids|dedupe|redact|sample|budget|hot)$') ?? {}
+      if includes(["content", "edits", "payments", "search"], found.team) { .tags.team = found.team }
+    type: remap
   payments_budget:
     inputs:
     - payments_sample
     threshold: 500
     type: throttle
     window_secs: 1
+  payments_dedupe:
+    cache:
+      num_events: 10000
+    fields:
+      match:
+      - spillway.event_id
+    inputs:
+    - payments_ids.with_id
+    type: dedupe
   payments_hot:
     inputs:
     - payments_budget
@@ -237,25 +285,94 @@ transforms:
           to_unix_timestamp(produced_at, unit: "milliseconds")
       }
     type: remap
+  payments_ids:
+    inputs:
+    - payments_in_services
+    route:
+      with_id: is_string(.spillway.event_id)
+    type: route
   payments_in_services:
     inputs:
     - payments_src_services
     source: |
       k = object(.kubernetes) ?? {}
-      . = {
+      line = to_string(.message) ?? ""
+      fields = {}
+      if starts_with(line, "{") {
+        fields = object(parse_json(line) ?? null) ?? {}
+      }
+      stamp = {}
+      level = null
+      if length(fields) > 0 {
+        if exists(fields._timestamp) { fields.app__timestamp = del(fields._timestamp) }
+        if exists(fields.stream) { fields.app_stream = del(fields.stream) }
+        if exists(fields.node) { fields.app_node = del(fields.node) }
+        if exists(fields.namespace) { fields.app_namespace = del(fields.namespace) }
+        if exists(fields.pod) { fields.app_pod = del(fields.pod) }
+        if exists(fields.container) { fields.app_container = del(fields.container) }
+        sp = del(fields.spillway)
+        if sp != null && !is_object(sp) {
+          fields.app_spillway = sp
+          sp = {}
+        }
+        sp = object(sp) ?? {}
+        id = string(sp.event_id) ?? ""
+        if match(id, r'^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$') {
+          stamp.event_id = id
+          del(sp.event_id)
+        }
+        produced_at, err = parse_timestamp(string(sp.produced_at) ?? "", "%+")
+        if err == null {
+          stamp.produced_at = format_timestamp!(produced_at, "%+")
+          del(sp.produced_at)
+        }
+        feeder = string(sp.feeder) ?? ""
+        if match(feeder, r'^[a-z]{1,16}(-[a-z]{1,16})?$') {
+          stamp.feeder = feeder
+          del(sp.feeder)
+        }
+        fixture_id = int(sp.fixture.id) ?? null
+        fixture_pattern = string(sp.fixture.pattern) ?? ""
+        if fixture_id != null && length(object(sp.fixture) ?? {}) == 2 && includes(["ssn", "email", "phone", "memberId"], fixture_pattern) {
+          stamp.fixture = {"id": fixture_id, "pattern": fixture_pattern}
+          del(sp.fixture)
+        }
+        if length(sp) > 0 { fields.app_spillway = sp }
+        level = fields.level
+        if level == null { level = fields.lvl }
+        if level == null { level = fields.severity }
+      } else {
+        fields.message = .message
+        found = parse_regex(line, r'^(?P<level>[IWEF])\d{4} ') ??
+          parse_regex(line, r'^(?:\d\S*\s+){0,2}\[?(?P<level>TRACE|DEBUG|INFO|WARN|WARNING|ERROR|FATAL|CRITICAL)\]?(?:\s|$)') ??
+          parse_regex(line, r'(?:^|\s)(?:level|lvl)="?(?P<level>[A-Za-z]+)') ??
+          {}
+        level = found.level
+      }
+      level = downcase(to_string(level) ?? "")
+      aliases = {
+        "i": "info", "w": "warn", "e": "error", "f": "fatal",
+        "warning": "warn", "err": "error", "eror": "error", "dbug": "debug", "crit": "critical",
+        "10": "trace", "20": "debug", "30": "info", "40": "warn", "50": "error", "60": "fatal"
+      }
+      level = string(get(aliases, [level]) ?? null) ?? level
+      if match(level, r'^[a-z]{1,16}$') { fields.level = level }
+      . = merge(fields, {
         "_timestamp": ._timestamp,
-        "message": .message,
         "stream": .stream,
         "node": k.pod_node_name,
         "namespace": k.pod_namespace,
         "pod": k.pod_name,
         "container": k.container_name
-      }
-      .spillway = {"team": "payments", "source": "services"}
+      })
+      if length(stamp) > 0 { .spillway = stamp }
+      .spillway.team = "payments"
+      .spillway.source = "services"
     type: remap
   payments_redact:
     inputs:
-    - payments_in_services
+    - payments_dedupe
+    - payments_ids._unmatched
     source: |
       # Redact every string in the event except Spillway's own metadata.
       meta = .spillway
@@ -282,15 +399,76 @@ transforms:
     - unclaimed_pods
     source: |
       k = object(.kubernetes) ?? {}
-      . = {
+      line = to_string(.message) ?? ""
+      fields = {}
+      if starts_with(line, "{") {
+        fields = object(parse_json(line) ?? null) ?? {}
+      }
+      stamp = {}
+      level = null
+      if length(fields) > 0 {
+        if exists(fields._timestamp) { fields.app__timestamp = del(fields._timestamp) }
+        if exists(fields.stream) { fields.app_stream = del(fields.stream) }
+        if exists(fields.node) { fields.app_node = del(fields.node) }
+        if exists(fields.namespace) { fields.app_namespace = del(fields.namespace) }
+        if exists(fields.pod) { fields.app_pod = del(fields.pod) }
+        if exists(fields.container) { fields.app_container = del(fields.container) }
+        sp = del(fields.spillway)
+        if sp != null && !is_object(sp) {
+          fields.app_spillway = sp
+          sp = {}
+        }
+        sp = object(sp) ?? {}
+        id = string(sp.event_id) ?? ""
+        if match(id, r'^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$') {
+          stamp.event_id = id
+          del(sp.event_id)
+        }
+        produced_at, err = parse_timestamp(string(sp.produced_at) ?? "", "%+")
+        if err == null {
+          stamp.produced_at = format_timestamp!(produced_at, "%+")
+          del(sp.produced_at)
+        }
+        feeder = string(sp.feeder) ?? ""
+        if match(feeder, r'^[a-z]{1,16}(-[a-z]{1,16})?$') {
+          stamp.feeder = feeder
+          del(sp.feeder)
+        }
+        fixture_id = int(sp.fixture.id) ?? null
+        fixture_pattern = string(sp.fixture.pattern) ?? ""
+        if fixture_id != null && length(object(sp.fixture) ?? {}) == 2 && includes(["ssn", "email", "phone", "memberId"], fixture_pattern) {
+          stamp.fixture = {"id": fixture_id, "pattern": fixture_pattern}
+          del(sp.fixture)
+        }
+        if length(sp) > 0 { fields.app_spillway = sp }
+        level = fields.level
+        if level == null { level = fields.lvl }
+        if level == null { level = fields.severity }
+      } else {
+        fields.message = .message
+        found = parse_regex(line, r'^(?P<level>[IWEF])\d{4} ') ??
+          parse_regex(line, r'^(?:\d\S*\s+){0,2}\[?(?P<level>TRACE|DEBUG|INFO|WARN|WARNING|ERROR|FATAL|CRITICAL)\]?(?:\s|$)') ??
+          parse_regex(line, r'(?:^|\s)(?:level|lvl)="?(?P<level>[A-Za-z]+)') ??
+          {}
+        level = found.level
+      }
+      level = downcase(to_string(level) ?? "")
+      aliases = {
+        "i": "info", "w": "warn", "e": "error", "f": "fatal",
+        "warning": "warn", "err": "error", "eror": "error", "dbug": "debug", "crit": "critical",
+        "10": "trace", "20": "debug", "30": "info", "40": "warn", "50": "error", "60": "fatal"
+      }
+      level = string(get(aliases, [level]) ?? null) ?? level
+      if match(level, r'^[a-z]{1,16}$') { fields.level = level }
+      . = merge(fields, {
         "_timestamp": ._timestamp,
-        "message": .message,
         "stream": .stream,
         "node": k.pod_node_name,
         "namespace": k.pod_namespace,
         "pod": k.pod_name,
         "container": k.container_name
-      }
+      })
+      if length(stamp) > 0 { .spillway = stamp }
     type: remap
   redact_pods:
     inputs:
@@ -301,6 +479,15 @@ transforms:
       . = redact(., filters: [r'[\p{L}\p{N}._%+-]+(?:@|%40)[\p{L}\p{N}.-]+\.\p{L}{2,}', r'MBR-\d{8}', r'(?:\+1[ .-]?)?(?:\(\d{3}\) ?|\d{3}[ .-])\d{3}[ .-]\d{4}', r'\d{3}-\d{2}-\d{4}'])
       if meta != null { .spillway = meta }
     type: remap
+  search_dedupe:
+    cache:
+      num_events: 10000
+    fields:
+      match:
+      - spillway.event_id
+    inputs:
+    - search_ids.with_id
+    type: dedupe
   search_hot:
     inputs:
     - search_redact
@@ -313,25 +500,94 @@ transforms:
           to_unix_timestamp(produced_at, unit: "milliseconds")
       }
     type: remap
+  search_ids:
+    inputs:
+    - search_in_pods
+    route:
+      with_id: is_string(.spillway.event_id)
+    type: route
   search_in_pods:
     inputs:
     - search_src_pods
     source: |
       k = object(.kubernetes) ?? {}
-      . = {
+      line = to_string(.message) ?? ""
+      fields = {}
+      if starts_with(line, "{") {
+        fields = object(parse_json(line) ?? null) ?? {}
+      }
+      stamp = {}
+      level = null
+      if length(fields) > 0 {
+        if exists(fields._timestamp) { fields.app__timestamp = del(fields._timestamp) }
+        if exists(fields.stream) { fields.app_stream = del(fields.stream) }
+        if exists(fields.node) { fields.app_node = del(fields.node) }
+        if exists(fields.namespace) { fields.app_namespace = del(fields.namespace) }
+        if exists(fields.pod) { fields.app_pod = del(fields.pod) }
+        if exists(fields.container) { fields.app_container = del(fields.container) }
+        sp = del(fields.spillway)
+        if sp != null && !is_object(sp) {
+          fields.app_spillway = sp
+          sp = {}
+        }
+        sp = object(sp) ?? {}
+        id = string(sp.event_id) ?? ""
+        if match(id, r'^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$') {
+          stamp.event_id = id
+          del(sp.event_id)
+        }
+        produced_at, err = parse_timestamp(string(sp.produced_at) ?? "", "%+")
+        if err == null {
+          stamp.produced_at = format_timestamp!(produced_at, "%+")
+          del(sp.produced_at)
+        }
+        feeder = string(sp.feeder) ?? ""
+        if match(feeder, r'^[a-z]{1,16}(-[a-z]{1,16})?$') {
+          stamp.feeder = feeder
+          del(sp.feeder)
+        }
+        fixture_id = int(sp.fixture.id) ?? null
+        fixture_pattern = string(sp.fixture.pattern) ?? ""
+        if fixture_id != null && length(object(sp.fixture) ?? {}) == 2 && includes(["ssn", "email", "phone", "memberId"], fixture_pattern) {
+          stamp.fixture = {"id": fixture_id, "pattern": fixture_pattern}
+          del(sp.fixture)
+        }
+        if length(sp) > 0 { fields.app_spillway = sp }
+        level = fields.level
+        if level == null { level = fields.lvl }
+        if level == null { level = fields.severity }
+      } else {
+        fields.message = .message
+        found = parse_regex(line, r'^(?P<level>[IWEF])\d{4} ') ??
+          parse_regex(line, r'^(?:\d\S*\s+){0,2}\[?(?P<level>TRACE|DEBUG|INFO|WARN|WARNING|ERROR|FATAL|CRITICAL)\]?(?:\s|$)') ??
+          parse_regex(line, r'(?:^|\s)(?:level|lvl)="?(?P<level>[A-Za-z]+)') ??
+          {}
+        level = found.level
+      }
+      level = downcase(to_string(level) ?? "")
+      aliases = {
+        "i": "info", "w": "warn", "e": "error", "f": "fatal",
+        "warning": "warn", "err": "error", "eror": "error", "dbug": "debug", "crit": "critical",
+        "10": "trace", "20": "debug", "30": "info", "40": "warn", "50": "error", "60": "fatal"
+      }
+      level = string(get(aliases, [level]) ?? null) ?? level
+      if match(level, r'^[a-z]{1,16}$') { fields.level = level }
+      . = merge(fields, {
         "_timestamp": ._timestamp,
-        "message": .message,
         "stream": .stream,
         "node": k.pod_node_name,
         "namespace": k.pod_namespace,
         "pod": k.pod_name,
         "container": k.container_name
-      }
-      .spillway = {"team": "search", "source": "pods"}
+      })
+      if length(stamp) > 0 { .spillway = stamp }
+      .spillway.team = "search"
+      .spillway.source = "pods"
     type: remap
   search_redact:
     inputs:
-    - search_in_pods
+    - search_dedupe
+    - search_ids._unmatched
     source: |
       # Redact every string in the event except Spillway's own metadata.
       meta = .spillway

@@ -17,6 +17,46 @@ tests:
       type: vrl
     extract_from: content_in_wikimedia
 - inputs:
+  - insert_at: content_ids
+    source: '. = {"message": "m", "spillway": {"event_id": "e1"}}'
+    type: vrl
+  name: content_ids sends events with an ID to dedupe
+  outputs:
+  - conditions:
+    - source: |
+        assert_eq!(.spillway.event_id, "e1")
+      type: vrl
+    extract_from: content_ids.with_id
+- inputs:
+  - insert_at: content_ids
+    source: '. = {"message": "m"}'
+    type: vrl
+  name: content_ids sends no event without an ID to dedupe
+  no_outputs_from:
+  - content_ids.with_id
+- inputs:
+  - insert_at: content_ids
+    source: '. = {"message": "m"}'
+    type: vrl
+  name: content_ids sends events without an ID around dedupe
+  outputs:
+  - conditions:
+    - source: |
+        assert_eq!(.message, "m")
+      type: vrl
+    extract_from: content_ids._unmatched
+- inputs:
+  - insert_at: content_dedupe
+    source: '. = {"message": "first", "spillway": {"event_id": "e1"}}'
+    type: vrl
+  name: content_dedupe passes the first copy of an event ID
+  outputs:
+  - conditions:
+    - source: |
+        assert_eq!(.message, "first")
+      type: vrl
+    extract_from: content_dedupe
+- inputs:
   - insert_at: content_redact
     source: '. = {"message": "contact: jo.doe@example.com", "detail": {"note": "jo.doe@example.com"},
       "spillway": {"team": "t", "event_id": "jo.doe@example.com"}}'
@@ -142,6 +182,46 @@ tests:
         assert!(!exists(.source_type))
       type: vrl
     extract_from: edits_in_recentchange
+- inputs:
+  - insert_at: edits_ids
+    source: '. = {"message": "m", "spillway": {"event_id": "e1"}}'
+    type: vrl
+  name: edits_ids sends events with an ID to dedupe
+  outputs:
+  - conditions:
+    - source: |
+        assert_eq!(.spillway.event_id, "e1")
+      type: vrl
+    extract_from: edits_ids.with_id
+- inputs:
+  - insert_at: edits_ids
+    source: '. = {"message": "m"}'
+    type: vrl
+  name: edits_ids sends no event without an ID to dedupe
+  no_outputs_from:
+  - edits_ids.with_id
+- inputs:
+  - insert_at: edits_ids
+    source: '. = {"message": "m"}'
+    type: vrl
+  name: edits_ids sends events without an ID around dedupe
+  outputs:
+  - conditions:
+    - source: |
+        assert_eq!(.message, "m")
+      type: vrl
+    extract_from: edits_ids._unmatched
+- inputs:
+  - insert_at: edits_dedupe
+    source: '. = {"message": "first", "spillway": {"event_id": "e1"}}'
+    type: vrl
+  name: edits_dedupe passes the first copy of an event ID
+  outputs:
+  - conditions:
+    - source: |
+        assert_eq!(.message, "first")
+      type: vrl
+    extract_from: edits_dedupe
 - inputs:
   - insert_at: edits_redact
     source: '. = {"message": "contact: jo.doe@example.com", "detail": {"note": "jo.doe@example.com"},
@@ -338,6 +418,68 @@ tests:
       type: vrl
     extract_from: payments_in_services
 - inputs:
+  - insert_at: payments_in_services
+    source: '. = {"message": "{\"level\":\"WARNING\",\"msg\":\"retrying\",\"namespace\":\"spoofed\",\"spillway\":{\"event_id\":\"0b0e7f5e-0c55-4c43-9a51-2d4e4f8c1b0a\",\"team\":\"other\"}}",
+      "stream": "stdout", "kubernetes": {"pod_namespace": "payments", "pod_name":
+      "app-0", "container_name": "app", "pod_node_name": "node-1"}}'
+    type: vrl
+  name: payments_in_services parses JSON pod logs and keeps only the trusted stamp
+  outputs:
+  - conditions:
+    - source: |
+        assert_eq!(.msg, "retrying")
+        assert_eq!(.level, "warn")
+        assert_eq!(.namespace, "payments")
+        assert_eq!(.app_namespace, "spoofed")
+        assert_eq!(.spillway.event_id, "0b0e7f5e-0c55-4c43-9a51-2d4e4f8c1b0a")
+        assert_eq!(.app_spillway.team, "other")
+        assert!(!exists(.message))
+        assert!(!exists(.kubernetes))
+        assert_eq!(.spillway.team, "payments")
+        assert_eq!(.spillway.source, "services")
+      type: vrl
+    extract_from: payments_in_services
+- inputs:
+  - insert_at: payments_ids
+    source: '. = {"message": "m", "spillway": {"event_id": "e1"}}'
+    type: vrl
+  name: payments_ids sends events with an ID to dedupe
+  outputs:
+  - conditions:
+    - source: |
+        assert_eq!(.spillway.event_id, "e1")
+      type: vrl
+    extract_from: payments_ids.with_id
+- inputs:
+  - insert_at: payments_ids
+    source: '. = {"message": "m"}'
+    type: vrl
+  name: payments_ids sends no event without an ID to dedupe
+  no_outputs_from:
+  - payments_ids.with_id
+- inputs:
+  - insert_at: payments_ids
+    source: '. = {"message": "m"}'
+    type: vrl
+  name: payments_ids sends events without an ID around dedupe
+  outputs:
+  - conditions:
+    - source: |
+        assert_eq!(.message, "m")
+      type: vrl
+    extract_from: payments_ids._unmatched
+- inputs:
+  - insert_at: payments_dedupe
+    source: '. = {"message": "first", "spillway": {"event_id": "e1"}}'
+    type: vrl
+  name: payments_dedupe passes the first copy of an event ID
+  outputs:
+  - conditions:
+    - source: |
+        assert_eq!(.message, "first")
+      type: vrl
+    extract_from: payments_dedupe
+- inputs:
   - insert_at: payments_redact
     source: '. = {"message": "contact: jo.doe@example.com", "detail": {"note": "jo.doe@example.com"},
       "spillway": {"team": "t", "event_id": "jo.doe@example.com"}}'
@@ -520,6 +662,68 @@ tests:
       type: vrl
     extract_from: search_in_pods
 - inputs:
+  - insert_at: search_in_pods
+    source: '. = {"message": "{\"level\":\"WARNING\",\"msg\":\"retrying\",\"namespace\":\"spoofed\",\"spillway\":{\"event_id\":\"0b0e7f5e-0c55-4c43-9a51-2d4e4f8c1b0a\",\"team\":\"other\"}}",
+      "stream": "stdout", "kubernetes": {"pod_namespace": "search", "pod_name": "app-0",
+      "container_name": "app", "pod_node_name": "node-1"}}'
+    type: vrl
+  name: search_in_pods parses JSON pod logs and keeps only the trusted stamp
+  outputs:
+  - conditions:
+    - source: |
+        assert_eq!(.msg, "retrying")
+        assert_eq!(.level, "warn")
+        assert_eq!(.namespace, "search")
+        assert_eq!(.app_namespace, "spoofed")
+        assert_eq!(.spillway.event_id, "0b0e7f5e-0c55-4c43-9a51-2d4e4f8c1b0a")
+        assert_eq!(.app_spillway.team, "other")
+        assert!(!exists(.message))
+        assert!(!exists(.kubernetes))
+        assert_eq!(.spillway.team, "search")
+        assert_eq!(.spillway.source, "pods")
+      type: vrl
+    extract_from: search_in_pods
+- inputs:
+  - insert_at: search_ids
+    source: '. = {"message": "m", "spillway": {"event_id": "e1"}}'
+    type: vrl
+  name: search_ids sends events with an ID to dedupe
+  outputs:
+  - conditions:
+    - source: |
+        assert_eq!(.spillway.event_id, "e1")
+      type: vrl
+    extract_from: search_ids.with_id
+- inputs:
+  - insert_at: search_ids
+    source: '. = {"message": "m"}'
+    type: vrl
+  name: search_ids sends no event without an ID to dedupe
+  no_outputs_from:
+  - search_ids.with_id
+- inputs:
+  - insert_at: search_ids
+    source: '. = {"message": "m"}'
+    type: vrl
+  name: search_ids sends events without an ID around dedupe
+  outputs:
+  - conditions:
+    - source: |
+        assert_eq!(.message, "m")
+      type: vrl
+    extract_from: search_ids._unmatched
+- inputs:
+  - insert_at: search_dedupe
+    source: '. = {"message": "first", "spillway": {"event_id": "e1"}}'
+    type: vrl
+  name: search_dedupe passes the first copy of an event ID
+  outputs:
+  - conditions:
+    - source: |
+        assert_eq!(.message, "first")
+      type: vrl
+    extract_from: search_dedupe
+- inputs:
   - insert_at: search_redact
     source: '. = {"message": "contact: jo.doe@example.com", "detail": {"note": "jo.doe@example.com"},
       "spillway": {"team": "t", "event_id": "jo.doe@example.com"}}'
@@ -619,6 +823,116 @@ tests:
       type: vrl
     extract_from: search_hot
 - inputs:
+  - insert_at: metrics_by_team
+    metric:
+      counter:
+        value: 1
+      kind: absolute
+      name: component_discarded_events_total
+      tags:
+        component_id: content_sample
+        intentional: "true"
+    type: metric
+  name: metrics_by_team tags content_sample's metrics with its team
+  outputs:
+  - conditions:
+    - source: |
+        assert_eq!(.tags.team, "content")
+        assert_eq!(.tags.component_id, "content_sample")
+      type: vrl
+    extract_from: metrics_by_team
+- inputs:
+  - insert_at: metrics_by_team
+    metric:
+      counter:
+        value: 1
+      kind: absolute
+      name: component_discarded_events_total
+      tags:
+        component_id: content_src_x
+        intentional: "true"
+    type: metric
+  name: metrics_by_team tags content_src_x's metrics with its team
+  outputs:
+  - conditions:
+    - source: |
+        assert_eq!(.tags.team, "content")
+        assert_eq!(.tags.component_id, "content_src_x")
+      type: vrl
+    extract_from: metrics_by_team
+- inputs:
+  - insert_at: metrics_by_team
+    metric:
+      counter:
+        value: 1
+      kind: absolute
+      name: component_discarded_events_total
+      tags:
+        component_id: hot_loki
+        intentional: "true"
+    type: metric
+  name: metrics_by_team leaves hot_loki's metrics without a team
+  outputs:
+  - conditions:
+    - source: |
+        assert!(!exists(.tags.team))
+      type: vrl
+    extract_from: metrics_by_team
+- inputs:
+  - insert_at: metrics_by_team
+    metric:
+      counter:
+        value: 1
+      kind: absolute
+      name: component_discarded_events_total
+      tags:
+        component_id: redact_feed
+        intentional: "true"
+    type: metric
+  name: metrics_by_team leaves redact_feed's metrics without a team
+  outputs:
+  - conditions:
+    - source: |
+        assert!(!exists(.tags.team))
+      type: vrl
+    extract_from: metrics_by_team
+- inputs:
+  - insert_at: metrics_by_team
+    metric:
+      counter:
+        value: 1
+      kind: absolute
+      name: component_discarded_events_total
+      tags:
+        component_id: team_latency_events
+        intentional: "true"
+    type: metric
+  name: metrics_by_team leaves team_latency_events's metrics without a team
+  outputs:
+  - conditions:
+    - source: |
+        assert!(!exists(.tags.team))
+      type: vrl
+    extract_from: metrics_by_team
+- inputs:
+  - insert_at: metrics_by_team
+    metric:
+      counter:
+        value: 1
+      kind: absolute
+      name: component_discarded_events_total
+      tags:
+        component_id: content_unknown
+        intentional: "true"
+    type: metric
+  name: metrics_by_team leaves content_unknown's metrics without a team
+  outputs:
+  - conditions:
+    - source: |
+        assert!(!exists(.tags.team))
+      type: vrl
+    extract_from: metrics_by_team
+- inputs:
   - insert_at: unclaimed_pods
     source: '. = {"message": "hello", "stream": "stdout", "kubernetes": {"pod_namespace":
       "payments", "pod_name": "app-0", "container_name": "app", "pod_node_name": "node-1",
@@ -675,6 +989,27 @@ tests:
         assert_eq!(.container, "app")
         assert_eq!(.node, "node-1")
         assert!(!exists(.kubernetes))
+      type: vrl
+    extract_from: pod_logs
+- inputs:
+  - insert_at: pod_logs
+    source: '. = {"message": "{\"level\":\"WARNING\",\"msg\":\"retrying\",\"namespace\":\"spoofed\",\"spillway\":{\"event_id\":\"0b0e7f5e-0c55-4c43-9a51-2d4e4f8c1b0a\",\"team\":\"other\"}}",
+      "stream": "stdout", "kubernetes": {"pod_namespace": "default", "pod_name": "app-0",
+      "container_name": "app", "pod_node_name": "node-1"}}'
+    type: vrl
+  name: pod_logs parses JSON pod logs and keeps only the trusted stamp
+  outputs:
+  - conditions:
+    - source: |
+        assert_eq!(.msg, "retrying")
+        assert_eq!(.level, "warn")
+        assert_eq!(.namespace, "default")
+        assert_eq!(.app_namespace, "spoofed")
+        assert_eq!(.spillway.event_id, "0b0e7f5e-0c55-4c43-9a51-2d4e4f8c1b0a")
+        assert_eq!(.app_spillway.team, "other")
+        assert!(!exists(.message))
+        assert!(!exists(.kubernetes))
+        assert!(!exists(.spillway.team))
       type: vrl
     extract_from: pod_logs
 - inputs:

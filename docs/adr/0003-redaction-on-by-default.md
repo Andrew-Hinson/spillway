@@ -1,6 +1,6 @@
 # ADR 0003: Redaction on by default, with boundary-free patterns
 
-Status: proposed · 2026-10-09 · M3.2
+Status: accepted · 2026-10-09 · M3.2
 
 ## Context
 

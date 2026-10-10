@@ -5,8 +5,8 @@ Spillway is a Kubernetes log platform: one `LogPipeline` spec per team becomes a
 ## Where the state lives
 
 - **Progress:** [`docs/plan.md`](docs/plan.md) has the milestones, the gate for each, and a checkbox per work item. Each item is a GitHub issue titled `[Mx.y] …` with its acceptance criteria. `gh issue list` shows what's open.
-- **Decisions:** [`docs/adr/`](docs/adr). 0001: validation with Vector bundled in the operator image. 0002: canary rollout via StatefulSet partition, quarantine and last-good specs. 0003: redaction on by default, with boundary-free patterns.
-- **Measurements:** [`docs/results/`](docs/results): the M1 baseline, the M2 gate run, and M3.2's redaction false positives and leak check.
+- **Decisions:** [`docs/adr/`](docs/adr). 0001: validation with Vector bundled in the operator image. 0002: canary rollout via StatefulSet partition, quarantine and last-good specs. 0003: redaction on by default, with boundary-free patterns. 0004: pod logs parsed, with only the feeder stamp trusted from an app's `spillway`.
+- **Measurements:** [`docs/results/`](docs/results): the M1 baseline, the M2 gate run, M3.2's redaction false positives and leak check, and M3.3's sampling, dedupe and per-team drops.
 - **Why something is the way it is:** the PR descriptions (`gh pr view N`) record the design, what testing found, and known limitations.
 
 ## Workflow for a work item
@@ -35,13 +35,15 @@ Spillway is a Kubernetes log platform: one `LogPipeline` spec per team becomes a
 | `make fixtures RATE=N` | Fictional-PII injector (opt-in) |
 | `make m2-gate`, `make baseline` | Recorded measurements; see `docs/results` |
 | `make leak-check WINDOW=15m` | Search every hot-sink stream for fixture values; fails on a leak or if no fixtures arrived |
+| `make sampling-check WINDOW=10m REF=edits=wiki-all` | Each team's dedupe, sampling and budget drops; per-level kept share against an unsampled reference team |
 | `make redaction-fp DURATION=600` | Capture live Wikimedia events and count what each redaction pattern masks |
 | `make tools` | Pinned kind, kubectl, helm, golangci-lint, controller-gen, setup-envtest and vector, in `./bin` |
 
 ## How the system fits together
 
 - **Renderer** (`internal/render`): all LogPipelines → one aggregator config, deterministically.
-  - Components are named `<team>_<stage>`; sinks (`hot_loki`, `cold_s3`) are shared.
+  - Components are named `<team>_<stage>`; sinks (`hot_loki`, `cold_s3`) are shared. `metrics_by_team` tags each team component's internal metrics with `team`, so drops and throughput sum per team.
+  - Stages: `in` → `ids`/`dedupe` (on `spillway.event_id`; events without one bypass it) → `redact` → cold split → `sample` → `budget` → `hot`.
   - Data no team claims takes the platform paths (`wikimedia → redact_feed → stamp → loki`, `agents → pod_logs → redact_pods → loki_pods`), which mask every pattern. Claimed topics and namespaces leave them.
   - With no pipelines, it renders the platform config (`vector/aggregator/vector.yaml`): M1 plus redaction.
   - It also generates `vector test` cases for every transform it emits (`tests.go`), and a Go test enforces that every transform is covered.
@@ -50,6 +52,7 @@ Spillway is a Kubernetes log platform: one `LogPipeline` spec per team becomes a
   - Pods select their config file through `$(SPILLWAY_CONFIG_SUFFIX)` from a pod annotation.
   - Cold storage is **off** unless `--cold-bucket` is set: MinIO arrives in M3.5, and until then cold-routed pipelines are `Invalid`.
 - **Field ownership:** the operator owns only fields Helm never sets: the config-suffix pod annotation, `updateStrategy.partition`, and its own annotations. Never `kubectl set`/`patch` a Helm-owned field, or the next `helm upgrade` fails with a server-side-apply conflict. If it happens, set the field back to Helm's value.
+- **Pod logs** (`internal/render/podlogs.go`): a JSON line's fields become the event's fields; any other line stays in `message`. Every line gets a normalized `level` when one is recognizable (JSON, klog, a leading level word, logfmt). An app's `spillway` object is trusted only in the exact feeder-stamp shapes, because redaction skips `.spillway`; the rest lands in `app_spillway`, which is redacted. `TestPodLogSpillwayCantCarryPII` guards this.
 - **Redaction** (`internal/redact`): VRL `redact()` filters, on by default (a spec opts out with `redaction: {disabled: true}`). The patterns have no `\b`: escaped JSON in pod logs (`\n123-45-6789`) defeats word boundaries, and VRL's regex has no lookbehind. `testdata/corpus.yaml` holds the positive and negative cases. Run a candidate pattern against live data with `go run ./bench/redactfp -filter name=r'…'` before changing one.
 - **Canary timing:** each config change takes ~2.5–4 min to reach both aggregators (2 min bake plus two restarts). Bake ≥ 2× the longest sink batch timeout. Error allowance is max(5, 0.1% of events).
 
@@ -58,6 +61,7 @@ Spillway is a Kubernetes log platform: one `LogPipeline` spec per team becomes a
 - **Prove tests can fail:** break the code on purpose (e.g. drop a redaction filter) and check that the test catches it.
 - **Confirm CI ran the tests:** check that CI logs show the envtest and vector tests actually running (`gh run view --log`), not skipped.
 - **Read real output:** for Vector behaviour, run the real binary (`bin/vector test`, `vector validate`) or scrape a live pod's `:9598/metrics`. Don't assume what Vector reports.
+- **`vector test` can't count:** an `outputs` check passes if *any* output event meets it, so it can't show that something was dropped while something else got through. For counts, run the rendered components in the real binary from Go (`internal/render/vector_test.go`).
 - **Clean up after controller tests:** envtest tests share one API server, and the reconciler sees LogPipelines in every namespace, so tests must delete what they create.
 
 ## Environment quirks
@@ -66,6 +70,7 @@ Spillway is a Kubernetes log platform: one `LogPipeline` spec per team becomes a
 - **python3 is 3.9:** backslashes aren't allowed inside f-string expressions. Build strings outside the f-string, or write a script file.
 - **zsh doesn't word-split** an unquoted `$VAR` containing spaces: use arrays or a script.
 - **Distroless images have no shell:** inspect a pod with `kubectl debug <pod> --image=busybox:1.37 --target=<container> --profile=sysadmin`, and read metrics via `kubectl port-forward`.
+- **Vector `dedupe`:** a missing match field counts as a value, so every event without it is a "duplicate" of the first. Route those around it.
 - **Vector timing:** its metrics endpoint comes up a few seconds after the pod is Ready. On shutdown it waits up to the 60 s grace period to drain sinks, which makes rolling back a stuck sink slow.
 - **Kafka source counts:** a new team's Kafka source has its own consumer group, so its events flow from the canary pod before promotion.
 - **Generated files:** a new example in `examples/` changes the goldens and the pinned counts in `cmd/spillwayctl/main_test.go`.
@@ -74,5 +79,6 @@ Spillway is a Kubernetes log platform: one `LogPipeline` spec per team becomes a
 
 - **#43:** a rolled-back canary leaves new sinks' disk buffers orphaned. It's visible (metric, warning, status) but not drained.
 - **False positives on other data:** measured only on Wikimedia (0.015% of events). Re-measure on GitHub events in M3.7.
-- **Pod logs aren't parsed:** they arrive as an unparsed `message` string, so their levels can't be sampled and fixture tags sit inside the message.
+- **Dedupe is per pod and in memory:** it catches feeder replays (same `event_id` and Kafka key, so same partition and aggregator), but not duplicates from a Kafka rebalance or an aggregator restart, which land on a pod with an empty cache. M4's chaos runs still dedupe by event ID when they count.
+- **Level from free text:** a text line whose logfmt part says `level=debug` is sampled as debug even if the app meant something else; JSON and klog lines are unambiguous.
 - **Canary checks:** per-team drop-rate checks join the comparison in M3. The operator's gate runs `vector validate`, not the generated tests, which run in CI and `spillwayctl`.

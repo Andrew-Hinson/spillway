@@ -359,8 +359,8 @@
     {
       "id": 6,
       "type": "stat",
-      "title": "Errors + drops (1h)",
-      "description": "Vector component errors, Vector discarded events and feeder produce errors in the last hour.",
+      "title": "Errors (1h)",
+      "description": "Vector component errors, events Vector discarded unintentionally, and feeder produce errors in the last hour. Policy drops (sampling, budgets, dedupe) are in the Teams row.",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
@@ -377,7 +377,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "(sum(increase(vector_component_errors_total[1h])) or vector(0)) + (sum(increase(vector_component_discarded_events_total[1h])) or vector(0)) + (sum(increase(spillway_feeder_produce_errors_total[1h])) or vector(0))",
+          "expr": "(sum(increase(vector_component_errors_total[1h])) or vector(0)) + (sum(increase(vector_component_discarded_events_total{intentional!=\"true\"}[1h])) or vector(0)) + (sum(increase(spillway_feeder_produce_errors_total[1h])) or vector(0))",
           "legendFormat": "",
           "refId": "A",
           "range": true
@@ -852,8 +852,8 @@
     {
       "id": 13,
       "type": "timeseries",
-      "title": "Errors and drops /s",
-      "description": "Should be flat at zero.",
+      "title": "Errors and unintended drops /s",
+      "description": "Should be flat at zero. Policy drops (sampling, budgets, dedupe) are intended and shown per team in the Teams row.",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
@@ -880,8 +880,8 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "sum(rate(vector_component_discarded_events_total[$__rate_interval])) or vector(0)",
-          "legendFormat": "Vector discarded events",
+          "expr": "sum(rate(vector_component_discarded_events_total{intentional!=\"true\"}[$__rate_interval])) or vector(0)",
+          "legendFormat": "Vector unintended drops",
           "refId": "B",
           "range": true
         },
@@ -934,7 +934,7 @@
           {
             "matcher": {
               "id": "byName",
-              "options": "Vector discarded events"
+              "options": "Vector unintended drops"
             },
             "properties": [
               {
@@ -1222,6 +1222,145 @@
       "options": {
         "legend": {
           "showLegend": false,
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "mean",
+            "max",
+            "lastNotNull"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "id": 18,
+      "type": "row",
+      "title": "Teams",
+      "collapsed": false,
+      "gridPos": {
+        "x": 0,
+        "y": 48,
+        "w": 24,
+        "h": 1
+      },
+      "panels": []
+    },
+    {
+      "id": 19,
+      "type": "timeseries",
+      "title": "Events/s to the hot sink by team",
+      "description": "Events each team's pipeline sends on to Loki, after dedupe, sampling and its budget.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 49,
+        "w": 12,
+        "h": 10
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum by (team) (rate(vector_component_sent_events_total{team!=\"\",component_id=~\".+_hot\"}[$__rate_interval]))",
+          "legendFormat": "{{team}}",
+          "refId": "A",
+          "range": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "min": 0,
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 0,
+            "showPoints": "never",
+            "spanNulls": true,
+            "axisSoftMin": 0,
+            "gradientMode": "none"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "showLegend": true,
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "mean",
+            "max",
+            "lastNotNull"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "id": 20,
+      "type": "timeseries",
+      "title": "Policy drops/s by team",
+      "description": "Events each team's policies drop on purpose: <team>_dedupe (repeated event IDs), <team>_sample (sampling) and <team>_budget (over budget). Sampling and budget drops thin only the hot path: a team routed cold still stores those events there. A team's src_ filters also count discards (other namespaces' pod logs on the shared agents stream), so they're left out.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 49,
+        "w": 12,
+        "h": 10
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum by (team, component_id) (rate(vector_component_discarded_events_total{intentional=\"true\",team!=\"\",component_id=~\".+_(dedupe|sample|budget)\"}[$__rate_interval]))",
+          "legendFormat": "{{component_id}}",
+          "refId": "A",
+          "range": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "min": 0,
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 0,
+            "showPoints": "never",
+            "spanNulls": true,
+            "axisSoftMin": 0,
+            "gradientMode": "none"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "showLegend": true,
           "displayMode": "table",
           "placement": "bottom",
           "calcs": [
