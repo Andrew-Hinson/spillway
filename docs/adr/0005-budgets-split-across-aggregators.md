@@ -1,6 +1,6 @@
 # ADR 0005: Budgets are split evenly across the aggregators
 
-Status: proposed · 2026-10-10 · M3.4
+Status: accepted · 2026-10-10 · M3.4
 
 ## Context
 
