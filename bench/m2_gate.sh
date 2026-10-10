@@ -134,11 +134,11 @@ echo
 echo "## 3. A change that fails at runtime is canaried and rolled back"
 log "configuring the operator's cold storage at an endpoint that doesn't exist"
 $k -n spillway-system patch deployment spillway-operator --type json \
-  -p '[{"op":"add","path":"/spec/template/spec/containers/0/args","value":["--cold-bucket=spillway-cold","--cold-endpoint=http://no-such-s3.storage.svc:7070"]}]' >/dev/null
+  -p '[{"op":"add","path":"/spec/template/spec/containers/0/args","value":["--cold-bucket=spillway-cold","--cold-endpoint=http://no-such-s3.storage.svc:9000"]}]' >/dev/null
 $k -n spillway-system rollout status deploy/spillway-operator --timeout=2m >/dev/null
 stable_before=$(sts '{.metadata.annotations.spillway\.dev/stable-config}')
 log "spillwayctl validate examples/content.yaml (cold storage configured): every offline check passes"
-bin/spillwayctl validate --vector-bin bin/vector --cold-bucket spillway-cold --cold-endpoint http://no-such-s3.storage.svc:7070 examples/content.yaml | sed 's/^/    /'
+bin/spillwayctl validate --vector-bin bin/vector --cold-bucket spillway-cold --cold-endpoint http://no-such-s3.storage.svc:9000 examples/content.yaml | sed 's/^/    /'
 start=$SECONDS
 log "kubectl apply -f examples/content.yaml"
 $k apply -f examples/content.yaml | sed 's/^/    /'

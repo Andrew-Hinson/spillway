@@ -106,7 +106,7 @@ broken.yaml (broken): INVALID
 render: ok (1 pipeline)
 ```
 
-`routing: {cold: true}` sends the team's complete redacted stream, before sampling and its budget, to object storage, as gzip JSON lines under `team=<team>/date=<YYYY-MM-DD>/`. Locally that's an S3-compatible gateway installed by `make up` ([ADR 0006](docs/adr/0006-versitygw-for-local-cold-storage.md)), and `make cold-check` checks every object in it. An operator started without `--cold-bucket` marks cold-routed pipelines Invalid instead of rolling out a sink with nowhere to write.
+`routing: {cold: true}` sends the team's complete redacted stream, before sampling and its budget, to object storage, as gzip JSON lines under `team=<team>/date=<YYYY-MM-DD>/`. Locally that's Silo, a maintained MinIO fork installed by `make up` ([ADR 0006](docs/adr/0006-silo-for-local-cold-storage.md)), and `make cold-check` checks every object in it. An operator started without `--cold-bucket` marks cold-routed pipelines Invalid instead of rolling out a sink with nowhere to write.
 
 ## Development
 

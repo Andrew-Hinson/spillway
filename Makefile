@@ -131,7 +131,7 @@ loki: $(HELM) ## Install Loki (monolithic, filesystem storage)
 		-f $(PLATFORM)/loki/values.yaml
 
 .PHONY: storage
-storage: $(KUBECTL) ## Install S3-compatible cold storage (versitygw) and the spillway-cold bucket
+storage: $(KUBECTL) ## Install S3-compatible cold storage (Silo, a MinIO fork) and the spillway-cold bucket
 	$(KUBECTL) create namespace storage --dry-run=client -o yaml | $(KUBECTL) apply -f -
 	$(KUBECTL) create namespace vector --dry-run=client -o yaml | $(KUBECTL) apply -f -
 	@# Random credentials, made once and copied to the aggregators' namespace.
@@ -253,12 +253,12 @@ leak-check: $(KUBECTL) ## Search the hot sink for injected fixture values over W
 .PHONY: cold-check
 cold-check: $(KUBECTL) docker-check ## Check every object in cold storage: team/date keys, gzip, and no fixture values
 	@dir=$$(mktemp -d); trap 'rm -rf $$dir; kill $$pf' EXIT; \
-		$(KUBECTL) -n storage port-forward svc/s3 7070:7070 >/dev/null 2>&1 & pf=$$!; sleep 2; \
+		$(KUBECTL) -n storage port-forward svc/s3 9000:9000 >/dev/null 2>&1 & pf=$$!; sleep 2; \
 		docker run --rm --network host --user $$(id -u):$$(id -g) -v $$dir:/out \
 			-e AWS_ACCESS_KEY_ID=$$($(KUBECTL) -n storage get secret cold-storage -o jsonpath='{.data.AWS_ACCESS_KEY_ID}' | base64 -d) \
 			-e AWS_SECRET_ACCESS_KEY=$$($(KUBECTL) -n storage get secret cold-storage -o jsonpath='{.data.AWS_SECRET_ACCESS_KEY}' | base64 -d) \
 			-e AWS_DEFAULT_REGION=us-east-1 -e HOME=/tmp amazon/aws-cli:2.37.12 \
-			--endpoint-url http://localhost:7070 s3 sync --only-show-errors s3://spillway-cold /out && \
+			--endpoint-url http://localhost:9000 s3 sync --only-show-errors s3://spillway-cold /out && \
 		python3 bench/coldcheck.py $$dir
 
 .PHONY: sampling-check

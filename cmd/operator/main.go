@@ -49,7 +49,7 @@ func main() {
 	flag.StringVar(&rec.StatefulSet, "aggregator-statefulset", "vector-aggregator", "the aggregator's StatefulSet")
 	flag.StringVar(&rec.ConfigMap, "aggregator-configmap", "vector-aggregator-config", "the ConfigMap the aggregator loads its config from")
 	flag.StringVar(&cold.Bucket, "cold-bucket", "", "S3 bucket for cold storage; empty disables cold routing")
-	flag.StringVar(&cold.Endpoint, "cold-endpoint", "", "S3 endpoint, e.g. http://s3.storage.svc:7070 (empty for AWS)")
+	flag.StringVar(&cold.Endpoint, "cold-endpoint", "", "S3 endpoint, e.g. http://s3.storage.svc:9000 (empty for AWS)")
 	flag.StringVar(&cold.Region, "cold-region", "us-east-1", "S3 region")
 	flag.StringVar(&metricsAddr, "metrics-bind-address", ":8080", "address for /metrics")
 	flag.StringVar(&probeAddr, "health-probe-bind-address", ":8081", "address for /healthz and /readyz")

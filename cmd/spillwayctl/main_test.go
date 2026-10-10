@@ -9,7 +9,7 @@ import (
 	"testing"
 )
 
-var coldFlags = []string{"--cold-bucket", "spillway-cold", "--cold-endpoint", "http://s3.storage.svc:7070"}
+var coldFlags = []string{"--cold-bucket", "spillway-cold", "--cold-endpoint", "http://s3.storage.svc:9000"}
 
 func spillwayctl(t *testing.T, args ...string) (code int, stdout, stderr string) {
 	t.Helper()
