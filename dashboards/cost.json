@@ -1,0 +1,830 @@
+{
+  "uid": "spillway-cost",
+  "title": "Spillway cost",
+  "description": "Volume and estimated cost per team, hot vs cold. Prices are editable defaults, not quotes: check your provider's current pricing.",
+  "tags": [
+    "spillway"
+  ],
+  "timezone": "browser",
+  "refresh": "1m",
+  "time": {
+    "from": "now-1h",
+    "to": "now"
+  },
+  "schemaVersion": 41,
+  "version": 1,
+  "editable": true,
+  "graphTooltip": 1,
+  "templating": {
+    "list": [
+      {
+        "type": "textbox",
+        "name": "hot_price",
+        "label": "Hot $ / GB ingested",
+        "query": "0.50",
+        "current": {
+          "text": "0.50",
+          "value": "0.50"
+        },
+        "options": [
+          {
+            "selected": true,
+            "text": "0.50",
+            "value": "0.50"
+          }
+        ],
+        "description": "Price per GB (10^9 bytes) ingested into hot storage. Default: a typical hosted-Loki list price.",
+        "hide": 0
+      },
+      {
+        "type": "textbox",
+        "name": "cold_price",
+        "label": "Cold $ / GB-month",
+        "query": "0.023",
+        "current": {
+          "text": "0.023",
+          "value": "0.023"
+        },
+        "options": [
+          {
+            "selected": true,
+            "text": "0.023",
+            "value": "0.023"
+          }
+        ],
+        "description": "Price per GB stored per month in cold storage. Default: a typical S3 Standard list price.",
+        "hide": 0
+      },
+      {
+        "type": "textbox",
+        "name": "cold_retention_months",
+        "label": "Cold retention (months)",
+        "query": "12",
+        "current": {
+          "text": "12",
+          "value": "12"
+        },
+        "options": [
+          {
+            "selected": true,
+            "text": "12",
+            "value": "12"
+          }
+        ],
+        "description": "How long cold data is kept. Cold cost shown is steady state: a month's data times this many months stored.",
+        "hide": 0
+      }
+    ]
+  },
+  "annotations": {
+    "list": []
+  },
+  "panels": [
+    {
+      "id": 1,
+      "type": "stat",
+      "title": "Estimated cost / month",
+      "description": "Hot plus cold, every team and unclaimed data, at the selected range's average rate and the prices set above.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 0,
+        "w": 6,
+        "h": 4
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum((sum by (team) (rate(vector_component_sent_event_bytes_total{team!=\"\",component_id=~\".+_hot\"}[$__range])) or label_replace(sum(rate(vector_component_received_event_bytes_total{component_id=~\"loki|loki_pods\"}[$__range])), \"team\", \"(unclaimed)\", \"\", \"\")) * 2592000 / 1e9 * $hot_price) + (sum(sum by (team) (rate(vector_component_sent_event_bytes_total{team!=\"\",component_id=~\".+_cold\"}[$__range])) * 2592000 / 1e9 * scalar(sum(rate(vector_component_sent_bytes_total{component_id=\"cold_s3\"}[$__range])) / sum(rate(vector_component_received_event_bytes_total{component_id=\"cold_s3\"}[$__range]))) * $cold_price * $cold_retention_months) or vector(0))",
+          "refId": "A",
+          "legendFormat": "",
+          "instant": true,
+          "range": false
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "currencyUSD",
+          "decimals": 2,
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "#3987e5"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "value",
+        "graphMode": "none",
+        "textMode": "value",
+        "justifyMode": "center"
+      }
+    },
+    {
+      "id": 2,
+      "type": "stat",
+      "title": "Hot volume / day",
+      "description": "Event bytes into Loki per day (team pipelines and unclaimed data), at the selected range's average rate. Hosted Loki is priced on ingested bytes like these.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "x": 6,
+        "y": 0,
+        "w": 6,
+        "h": 4
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum((sum by (team) (rate(vector_component_sent_event_bytes_total{team!=\"\",component_id=~\".+_hot\"}[$__range])) or label_replace(sum(rate(vector_component_received_event_bytes_total{component_id=~\"loki|loki_pods\"}[$__range])), \"team\", \"(unclaimed)\", \"\", \"\"))) * 86400",
+          "refId": "A",
+          "legendFormat": "",
+          "instant": true,
+          "range": false
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "decbytes",
+          "decimals": 1,
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "#3987e5"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "value",
+        "graphMode": "none",
+        "textMode": "value",
+        "justifyMode": "center"
+      }
+    },
+    {
+      "id": 3,
+      "type": "stat",
+      "title": "Cold stored / day",
+      "description": "Gzip bytes written to cold storage per day: event bytes into the per-team cold stages times the cold sink's measured compression ratio.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 0,
+        "w": 6,
+        "h": 4
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "(sum(sum by (team) (rate(vector_component_sent_event_bytes_total{team!=\"\",component_id=~\".+_cold\"}[$__range]))) or vector(0)) * 86400 * scalar(sum(rate(vector_component_sent_bytes_total{component_id=\"cold_s3\"}[$__range])) / sum(rate(vector_component_received_event_bytes_total{component_id=\"cold_s3\"}[$__range])))",
+          "refId": "A",
+          "legendFormat": "",
+          "instant": true,
+          "range": false
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "decbytes",
+          "decimals": 1,
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "#3987e5"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "value",
+        "graphMode": "none",
+        "textMode": "value",
+        "justifyMode": "center"
+      }
+    },
+    {
+      "id": 4,
+      "type": "stat",
+      "title": "Cold compression",
+      "description": "Bytes the cold sink uploaded over the event bytes it took in (gzip JSON lines), over the selected range.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "x": 18,
+        "y": 0,
+        "w": 6,
+        "h": 4
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "scalar(sum(rate(vector_component_sent_bytes_total{component_id=\"cold_s3\"}[$__range])) / sum(rate(vector_component_received_event_bytes_total{component_id=\"cold_s3\"}[$__range])))",
+          "refId": "A",
+          "legendFormat": "",
+          "instant": true,
+          "range": false
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "decimals": 1,
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "#3987e5"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "value",
+        "graphMode": "none",
+        "textMode": "value",
+        "justifyMode": "center"
+      }
+    },
+    {
+      "id": 5,
+      "type": "table",
+      "title": "Volume and estimated cost by team",
+      "description": "Per team, at the selected range's average rate. In: event bytes entering the team's pipeline, after parsing and tagging. Hot: event bytes into Loki, after dedupe, redaction, sampling and the budget. Cold: event bytes into cold storage (the complete redacted stream), and the gzip bytes they become. Unclaimed data (the platform paths) is hot only. Cold cost is steady state: a month's data, stored for the retention set above.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 4,
+        "w": 24,
+        "h": 9
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "(sum by (team) (rate(vector_component_received_event_bytes_total{team!=\"\",component_id=~\".+_ids\"}[$__range])) or label_replace(sum(rate(vector_component_received_event_bytes_total{component_id=~\"loki|loki_pods\"}[$__range])), \"team\", \"(unclaimed)\", \"\", \"\")) * 86400",
+          "refId": "A",
+          "legendFormat": "",
+          "instant": true,
+          "range": false,
+          "format": "table"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "(sum by (team) (rate(vector_component_sent_event_bytes_total{team!=\"\",component_id=~\".+_hot\"}[$__range])) or label_replace(sum(rate(vector_component_received_event_bytes_total{component_id=~\"loki|loki_pods\"}[$__range])), \"team\", \"(unclaimed)\", \"\", \"\")) * 86400",
+          "refId": "B",
+          "legendFormat": "",
+          "instant": true,
+          "range": false,
+          "format": "table"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum by (team) (rate(vector_component_sent_event_bytes_total{team!=\"\",component_id=~\".+_cold\"}[$__range])) * 86400",
+          "refId": "C",
+          "legendFormat": "",
+          "instant": true,
+          "range": false,
+          "format": "table"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum by (team) (rate(vector_component_sent_event_bytes_total{team!=\"\",component_id=~\".+_cold\"}[$__range])) * 86400 * scalar(sum(rate(vector_component_sent_bytes_total{component_id=\"cold_s3\"}[$__range])) / sum(rate(vector_component_received_event_bytes_total{component_id=\"cold_s3\"}[$__range])))",
+          "refId": "D",
+          "legendFormat": "",
+          "instant": true,
+          "range": false,
+          "format": "table"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "(sum by (team) (rate(vector_component_sent_event_bytes_total{team!=\"\",component_id=~\".+_hot\"}[$__range])) or label_replace(sum(rate(vector_component_received_event_bytes_total{component_id=~\"loki|loki_pods\"}[$__range])), \"team\", \"(unclaimed)\", \"\", \"\")) * 2592000 / 1e9 * $hot_price",
+          "refId": "E",
+          "legendFormat": "",
+          "instant": true,
+          "range": false,
+          "format": "table"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum by (team) (rate(vector_component_sent_event_bytes_total{team!=\"\",component_id=~\".+_cold\"}[$__range])) * 2592000 / 1e9 * scalar(sum(rate(vector_component_sent_bytes_total{component_id=\"cold_s3\"}[$__range])) / sum(rate(vector_component_received_event_bytes_total{component_id=\"cold_s3\"}[$__range]))) * $cold_price * $cold_retention_months",
+          "refId": "F",
+          "legendFormat": "",
+          "instant": true,
+          "range": false,
+          "format": "table"
+        }
+      ],
+      "transformations": [
+        {
+          "id": "merge",
+          "options": {}
+        },
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "Time": true
+            },
+            "renameByName": {
+              "Value #A": "In / day",
+              "Value #B": "Hot / day",
+              "Value #C": "Cold / day (events)",
+              "Value #D": "Cold / day (stored)",
+              "Value #E": "Hot $ / month",
+              "Value #F": "Cold $ / month"
+            },
+            "indexByName": {
+              "team": 0,
+              "Value #A": 1,
+              "Value #B": 2,
+              "Value #C": 3,
+              "Value #D": 4,
+              "Value #E": 5,
+              "Value #F": 6
+            }
+          }
+        },
+        {
+          "id": "calculateField",
+          "options": {
+            "mode": "binary",
+            "binary": {
+              "left": "Hot $ / month",
+              "operator": "+",
+              "right": "Cold $ / month"
+            },
+            "alias": "Total $ / month",
+            "replaceFields": false
+          }
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "align": "auto"
+          },
+          "noValue": "–"
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "In / day"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "decbytes"
+              },
+              {
+                "id": "decimals",
+                "value": 1
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Hot / day"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "decbytes"
+              },
+              {
+                "id": "decimals",
+                "value": 1
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Cold / day (events)"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "decbytes"
+              },
+              {
+                "id": "decimals",
+                "value": 1
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Cold / day (stored)"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "decbytes"
+              },
+              {
+                "id": "decimals",
+                "value": 1
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Hot $ / month"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "currencyUSD"
+              },
+              {
+                "id": "decimals",
+                "value": 2
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Cold $ / month"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "currencyUSD"
+              },
+              {
+                "id": "decimals",
+                "value": 2
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Total $ / month"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "currencyUSD"
+              },
+              {
+                "id": "decimals",
+                "value": 2
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "team"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "Team"
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "showHeader": true,
+        "sortBy": [
+          {
+            "displayName": "Total $ / month",
+            "desc": true
+          }
+        ],
+        "cellHeight": "sm"
+      }
+    },
+    {
+      "id": 6,
+      "type": "timeseries",
+      "title": "Hot bytes/s by team",
+      "description": "Event bytes into Loki, stacked by team (unclaimed data included).",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 13,
+        "w": 12,
+        "h": 9
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "(sum by (team) (rate(vector_component_sent_event_bytes_total{team!=\"\",component_id=~\".+_hot\"}[$__rate_interval])) or label_replace(sum(rate(vector_component_received_event_bytes_total{component_id=~\"loki|loki_pods\"}[$__rate_interval])), \"team\", \"(unclaimed)\", \"\", \"\"))",
+          "refId": "A",
+          "legendFormat": "{{team}}",
+          "range": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "Bps",
+          "min": 0,
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 20,
+            "showPoints": "never",
+            "spanNulls": true,
+            "stacking": {
+              "mode": "normal",
+              "group": "A"
+            }
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "showLegend": true,
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "mean",
+            "lastNotNull"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "id": 7,
+      "type": "timeseries",
+      "title": "Cold bytes/s by team",
+      "description": "Event bytes into cold storage, stacked by team, before gzip.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 13,
+        "w": 12,
+        "h": 9
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum by (team) (rate(vector_component_sent_event_bytes_total{team!=\"\",component_id=~\".+_cold\"}[$__rate_interval]))",
+          "refId": "A",
+          "legendFormat": "{{team}}",
+          "range": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "Bps",
+          "min": 0,
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 20,
+            "showPoints": "never",
+            "spanNulls": true,
+            "stacking": {
+              "mode": "normal",
+              "group": "A"
+            }
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "showLegend": true,
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "mean",
+            "lastNotNull"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "id": 8,
+      "type": "timeseries",
+      "title": "Estimated $ / month by team",
+      "description": "Hot plus cold, at each moment's rate and the prices set above.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 22,
+        "w": 12,
+        "h": 9
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "(sum by (team) (rate(vector_component_sent_event_bytes_total{team!=\"\",component_id=~\".+_hot\"}[$__rate_interval])) or label_replace(sum(rate(vector_component_received_event_bytes_total{component_id=~\"loki|loki_pods\"}[$__rate_interval])), \"team\", \"(unclaimed)\", \"\", \"\")) * 2592000 / 1e9 * $hot_price + (sum by (team) (rate(vector_component_sent_event_bytes_total{team!=\"\",component_id=~\".+_cold\"}[$__rate_interval])) * 2592000 / 1e9 * scalar(sum(rate(vector_component_sent_bytes_total{component_id=\"cold_s3\"}[$__rate_interval])) / sum(rate(vector_component_received_event_bytes_total{component_id=\"cold_s3\"}[$__rate_interval]))) * $cold_price * $cold_retention_months or (sum by (team) (rate(vector_component_sent_event_bytes_total{team!=\"\",component_id=~\".+_hot\"}[$__rate_interval])) or label_replace(sum(rate(vector_component_received_event_bytes_total{component_id=~\"loki|loki_pods\"}[$__rate_interval])), \"team\", \"(unclaimed)\", \"\", \"\")) * 2592000 / 1e9 * $hot_price * 0)",
+          "refId": "A",
+          "legendFormat": "{{team}}",
+          "range": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "currencyUSD",
+          "min": 0,
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 20,
+            "showPoints": "never",
+            "spanNulls": true,
+            "stacking": {
+              "mode": "normal",
+              "group": "A"
+            }
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "showLegend": true,
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "mean",
+            "lastNotNull"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "id": 9,
+      "type": "timeseries",
+      "title": "Hot volume kept, by team",
+      "description": "Bytes into Loki over bytes into the team's pipeline: what dedupe, sampling and the budget leave in hot storage.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 22,
+        "w": 12,
+        "h": 9
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum by (team) (rate(vector_component_sent_event_bytes_total{team!=\"\",component_id=~\".+_hot\"}[$__rate_interval])) / sum by (team) (rate(vector_component_received_event_bytes_total{team!=\"\",component_id=~\".+_ids\"}[$__rate_interval]))",
+          "refId": "A",
+          "legendFormat": "{{team}}",
+          "range": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "min": 0,
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 0,
+            "showPoints": "never",
+            "spanNulls": true,
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            }
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "showLegend": true,
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "mean",
+            "lastNotNull"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    }
+  ]
+}

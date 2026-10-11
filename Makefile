@@ -261,6 +261,12 @@ cold-check: $(KUBECTL) docker-check ## Check every object in cold storage: team/
 			--endpoint-url http://localhost:9000 s3 sync --only-show-errors s3://spillway-cold /out && \
 		python3 bench/coldcheck.py $$dir
 
+.PHONY: cost-report
+cost-report: $(KUBECTL) ## Volume and estimated cost per team, hot vs cold, over WINDOW (default 30m); the cost dashboard as Markdown
+	@$(KUBECTL) -n observability port-forward svc/prometheus-server 9090:80 >/dev/null 2>&1 & pf=$$!; \
+		trap 'kill $$pf' EXIT; sleep 2; \
+		python3 bench/cost.py --window $(or $(WINDOW),30m)
+
 .PHONY: sampling-check
 sampling-check: $(KUBECTL) ## Report each team's dedupe, sampling and budget drops over WINDOW (default 10m); REF=team=ref compares levels to an unsampled team
 	@$(KUBECTL) -n observability port-forward svc/loki 3100:3100 >/dev/null 2>&1 & pf1=$$!; \

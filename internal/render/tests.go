@@ -225,7 +225,7 @@ func (c *config) testTeamMetrics(id, team string) {
 			"tags": map[string]any{"component_id": component, "intentional": "true"},
 		}}
 	}
-	for _, stage := range []string{"sample", "src_x"} {
+	for _, stage := range []string{"sample", "src_x", "cold"} {
 		c.tests = append(c.tests, map[string]any{
 			"name":   fmt.Sprintf("%s tags %s_%s's metrics with its team", id, team, stage),
 			"inputs": []any{metric(team + "_" + stage)},
@@ -265,4 +265,10 @@ func podJSONAsserts(namespace string) []string {
 		`assert!(!exists(.message))`,
 		`assert!(!exists(.kubernetes))`,
 	}
+}
+
+func (c *config) testPassThrough(id string) {
+	c.test(id+" passes events through unchanged", id,
+		vrlObject(`"message": "m", "spillway": {"team": "t", "event_id": "e1"}`), id,
+		`assert_eq!(., {"message": "m", "spillway": {"team": "t", "event_id": "e1"}})`)
 }

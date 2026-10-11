@@ -5,6 +5,7 @@ import (
 	"flag"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -340,5 +341,47 @@ func TestBudgetIsSplitAcrossAggregators(t *testing.T) {
 	budget := renderedTransformsWith(t, p, opts)["edits_budget"].(map[string]any)
 	if budget["threshold"] != 120.0 || budget["window_secs"] != 10.0 {
 		t.Errorf("edits_budget on 2 aggregators = %v, want 120 events per 10 s (12/s per pod)", budget)
+	}
+}
+
+// Cost attribution counts each team's cold volume at <team>_cold, so every
+// cold-routed team must reach the shared sink through its own pass-through,
+// and nothing else may feed the sink.
+func TestColdVolumeIsCountedPerTeam(t *testing.T) {
+	var all []spillwayv1alpha1.LogPipeline
+	var want []string
+	for _, p := range loadExamples(t) {
+		all = append(all, p)
+		if cold(p) {
+			want = append(want, p.Spec.Team+"_cold")
+		}
+	}
+	if len(want) < 2 {
+		t.Fatalf("want at least two cold-routed examples, got %v", want)
+	}
+	b, err := Render(all, DefaultOptions())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var cfg struct {
+		Transforms map[string]map[string]any
+		Sinks      map[string]map[string]any
+	}
+	if err := yaml.Unmarshal(b, &cfg); err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	for _, in := range cfg.Sinks["cold_s3"]["inputs"].([]any) {
+		got = append(got, in.(string))
+	}
+	slices.Sort(got)
+	slices.Sort(want)
+	if !slices.Equal(got, want) {
+		t.Errorf("cold_s3 inputs = %v, want each cold team's pass-through %v", got, want)
+	}
+	for _, id := range want {
+		if cfg.Transforms[id]["type"] != "remap" {
+			t.Errorf("%s is missing or not a pass-through remap: %v", id, cfg.Transforms[id])
+		}
 	}
 }

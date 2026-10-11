@@ -197,6 +197,17 @@ tests:
       type: vrl
     extract_from: payments_redact
 - inputs:
+  - insert_at: payments_cold
+    source: '. = {"message": "m", "spillway": {"team": "t", "event_id": "e1"}}'
+    type: vrl
+  name: payments_cold passes events through unchanged
+  outputs:
+  - conditions:
+    - source: |
+        assert_eq!(., {"message": "m", "spillway": {"team": "t", "event_id": "e1"}})
+      type: vrl
+    extract_from: payments_cold
+- inputs:
   - insert_at: payments_sample
     source: '. = set!(value: {"message": "m"}, path: ["level"], data: "DEBUG")'
     type: vrl
@@ -298,6 +309,25 @@ tests:
     - source: |
         assert_eq!(.tags.team, "payments")
         assert_eq!(.tags.component_id, "payments_src_x")
+      type: vrl
+    extract_from: metrics_by_team
+- inputs:
+  - insert_at: metrics_by_team
+    metric:
+      counter:
+        value: 1
+      kind: absolute
+      name: component_discarded_events_total
+      tags:
+        component_id: payments_cold
+        intentional: "true"
+    type: metric
+  name: metrics_by_team tags payments_cold's metrics with its team
+  outputs:
+  - conditions:
+    - source: |
+        assert_eq!(.tags.team, "payments")
+        assert_eq!(.tags.component_id, "payments_cold")
       type: vrl
     extract_from: metrics_by_team
 - inputs:

@@ -174,7 +174,7 @@ transforms:
     inputs:
     - internal_metrics
     source: |
-      found = parse_regex(string(.tags.component_id) ?? "", r'^(?P<team>[a-z0-9-]+)_(?:src_.+|in_.+|ids|dedupe|redact|sample|budget|hot)$') ?? {}
+      found = parse_regex(string(.tags.component_id) ?? "", r'^(?P<team>[a-z0-9-]+)_(?:src_.+|in_.+|ids|dedupe|redact|cold|sample|budget|hot)$') ?? {}
       if includes(["edits"], found.team) { .tags.team = found.team }
     type: remap
   pod_logs:
