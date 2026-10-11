@@ -26,6 +26,7 @@ sinks:
       method: newline_delimited
     inputs:
     - content_cold
+    - oss_cold
     - payments_cold
     key_prefix: team={{ spillway.team }}/date=%Y-%m-%d/
     region: us-east-1
@@ -45,6 +46,7 @@ sinks:
     inputs:
     - content_hot
     - edits_hot
+    - oss_hot
     - payments_hot
     - search_hot
     labels:
@@ -151,6 +153,22 @@ sources:
   internal_metrics:
     scrape_interval_secs: 15
     type: internal_metrics
+  oss_src_events:
+    auto_offset_reset: latest
+    bootstrap_servers: spillway-kafka-bootstrap.kafka.svc:9092
+    decoding:
+      codec: json
+    group_id: spillway-oss-events
+    headers_key: ""
+    key_field: ""
+    metrics:
+      topic_lag_metric: true
+    offset_key: ""
+    partition_key: ""
+    topic_key: ""
+    topics:
+    - github.events
+    type: kafka
 transforms:
   content_budget:
     inputs:
@@ -276,7 +294,75 @@ transforms:
     - internal_metrics
     source: |
       found = parse_regex(string(.tags.component_id) ?? "", r'^(?P<team>[a-z0-9-]+)_(?:src_.+|in_.+|ids|dedupe|redact|cold|sample|budget|hot)$') ?? {}
-      if includes(["content", "edits", "payments", "search"], found.team) { .tags.team = found.team }
+      if includes(["content", "edits", "oss", "payments", "search"], found.team) { .tags.team = found.team }
+    type: remap
+  oss_budget:
+    inputs:
+    - oss_sample
+    threshold: 20
+    type: throttle
+    window_secs: 10
+  oss_cold:
+    inputs:
+    - oss_redact
+    source: |
+      # Pass through: counts this team's volume to cold storage.
+      true
+    type: remap
+  oss_dedupe:
+    cache:
+      num_events: 10000
+    fields:
+      match:
+      - spillway.event_id
+    inputs:
+    - oss_ids.with_id
+    type: dedupe
+  oss_hot:
+    inputs:
+    - oss_budget
+    source: |
+      sink_at = now()
+      .spillway.sink_at = sink_at
+      produced_at, err = parse_timestamp(.spillway.produced_at, "%+")
+      if err == null {
+        .spillway.pipeline_latency_ms = to_unix_timestamp(sink_at, unit: "milliseconds") -
+          to_unix_timestamp(produced_at, unit: "milliseconds")
+      }
+    type: remap
+  oss_ids:
+    inputs:
+    - oss_in_events
+    route:
+      with_id: is_string(.spillway.event_id)
+    type: route
+  oss_in_events:
+    inputs:
+    - oss_src_events
+    source: |
+      del(.source_type)
+      .spillway.team = "oss"
+      .spillway.source = "events"
+    type: remap
+  oss_redact:
+    inputs:
+    - oss_dedupe
+    - oss_ids._unmatched
+    source: |
+      # Redact every string in the event except Spillway's own metadata.
+      meta = .spillway
+      . = redact(., filters: [r'[\p{L}\p{N}._%+-]+(?:@|%40)[\p{L}\p{N}.-]+\.\p{L}{2,}', r'MBR-\d{8}', r'(?:\+1[ .-]?)?(?:\(\d{3}\) ?|\d{3}[ .-])\d{3}[ .-]\d{4}', r'\d{3}-\d{2}-\d{4}'])
+      if meta != null { .spillway = meta }
+    type: remap
+  oss_sample:
+    drop_on_abort: true
+    inputs:
+    - oss_redact
+    source: |
+      keep = {"pushevent": 20}
+      level = downcase(to_string(get(., ["type"]) ?? null) ?? "")
+      percent = int(get(keep, [level]) ?? null) ?? 100
+      if random_int(0, 100) >= percent { abort }
     type: remap
   payments_budget:
     inputs:
@@ -637,6 +723,7 @@ transforms:
     inputs:
     - content_hot
     - edits_hot
+    - oss_hot
     - payments_hot
     - search_hot
     type: filter

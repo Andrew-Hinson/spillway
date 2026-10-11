@@ -1,0 +1,24 @@
+# OSS: GitHub's public events, a feeder with a different shape and rate from
+# Wikimedia. The event type stands in for a level: push events, nearly 90% of
+# the stream, are thinned to a fifth; everything else is kept. Commit authors'
+# names and emails are masked by the default redaction. Hot is capped at 4
+# events/s, and cold keeps everything.
+apiVersion: spillway.dev/v1alpha1
+kind: LogPipeline
+metadata:
+  name: oss
+spec:
+  team: oss
+  sources:
+    - name: events
+      kafka:
+        topic: github.events
+  sampling:
+    levelField: type
+    keepPercent:
+      pushevent: 20
+  budget:
+    maxEventsPerSec: 4
+  routing:
+    hot: true
+    cold: true

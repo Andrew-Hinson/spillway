@@ -1,0 +1,87 @@
+# GitHub public events feeder: polls api.github.com/events -> Kafka topic
+# github.events. Without a token it gets 60 requests an hour, about 0.3-1
+# new events/s; a token in the optional github-feeder Secret (key: token)
+# raises the limit. The image tag is filled in by `make feeders`.
+apiVersion: kafka.strimzi.io/v1
+kind: KafkaTopic
+metadata:
+  name: github.events
+  namespace: kafka
+  labels:
+    strimzi.io/cluster: spillway
+spec:
+  # Six divides evenly among 1, 2, 3 or 6 aggregators, so each enforces an
+  # even share of a team's budget (docs/adr/0005).
+  partitions: 6
+  replicas: 1
+  config:
+    retention.ms: 86400000       # 1 day
+    retention.bytes: 268435456   # 256 MiB per partition
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: feeders
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: github-feeder
+  namespace: feeders
+  labels:
+    app.kubernetes.io/name: github-feeder
+    app.kubernetes.io/part-of: spillway
+spec:
+  replicas: 1
+  # Two pollers would share one rate limit; never run two at once.
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: github-feeder
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: github-feeder
+        app.kubernetes.io/part-of: spillway
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8080"
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: feeder
+          image: spillway/github-feeder:dev
+          imagePullPolicy: Never   # loaded into kind by `make feeders`
+          env:
+            - name: KAFKA_BROKERS
+              value: spillway-kafka-bootstrap.kafka.svc:9092
+            - name: KAFKA_TOPIC
+              value: github.events
+            - name: GITHUB_TOKEN
+              valueFrom:
+                secretKeyRef: {name: github-feeder, key: token, optional: true}
+          ports:
+            - name: metrics
+              containerPort: 8080
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: metrics
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: metrics
+          resources:
+            requests:
+              cpu: 20m
+              memory: 32Mi
+            limits:
+              memory: 128Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true

@@ -25,12 +25,12 @@
 // lists fewer or turns redaction off (docs/adr/0003).
 //
 // Data no team claims takes the platform defaults, which are the M1 pipeline
-// with every pattern masked and pod logs parsed: the feeder topic goes to
-// Loki (wikimedia -> redact_feed -> stamp -> loki) and pod logs go to Loki
-// labelled by namespace, pod and container (agents -> pod_logs ->
-// redact_pods -> loki_pods). A claimed topic or namespace leaves the default path. With no
-// pipelines, Render returns the platform config: vector/aggregator/vector.yaml
-// is generated from it.
+// with every pattern masked and pod logs parsed: the feeder topics go to
+// Loki (wikimedia, github -> redact_feed -> stamp -> loki) and pod logs go
+// to Loki labelled by namespace, pod and container (agents -> pod_logs ->
+// redact_pods -> loki_pods). A claimed topic or namespace leaves the default
+// path. With no pipelines, Render returns the platform config:
+// vector/aggregator/vector.yaml is generated from it.
 package render
 
 import (
@@ -63,11 +63,20 @@ type Options struct {
 
 // Platform configures the default paths for unclaimed data.
 type Platform struct {
-	// FeederTopic is read with the M1 consumer group and sent to Loki
-	// unchanged, unless a team reads it. Empty disables the path.
-	FeederTopic string
+	// Feeds are the feeder topics sent to Loki, redacted, unless a team
+	// reads them. None disables the path.
+	Feeds []Feed
 	// PodLogs sends pod logs from namespaces no team claims to Loki.
 	PodLogs bool
+}
+
+// Feed is one feeder topic on the platform path.
+type Feed struct {
+	// ID names its Kafka source. It must not contain an underscore, so it
+	// can't clash with a team's <team>_<stage> components.
+	ID    string
+	Topic string
+	Group string // consumer group
 }
 
 // ColdStorage is an S3-compatible bucket (Silo locally, S3 in the cloud).
@@ -88,7 +97,14 @@ func DefaultOptions() Options {
 			Bucket:   "spillway-cold",
 			Region:   "us-east-1",
 		},
-		Platform: Platform{FeederTopic: "wikimedia.recentchange", PodLogs: true},
+		Platform: Platform{
+			Feeds: []Feed{
+				// The M1 consumer group predates teams.
+				{ID: "wikimedia", Topic: "wikimedia.recentchange", Group: "spillway-aggregator"},
+				{ID: "github", Topic: "github.events", Group: "spillway-platform-github"},
+			},
+			PodLogs: true,
+		},
 		// vector/aggregator/values.yaml runs two; the operator uses the
 		// StatefulSet's actual replica count.
 		Aggregators: 2,
@@ -426,14 +442,14 @@ func latencyHistogram(tags map[string]any) map[string]any {
 // whether the feeder path (and so its latency metric) was added.
 func (c *config) addPlatform(pipelines []spillwayv1alpha1.LogPipeline, opts Options) bool {
 	var claimedNS []string
-	topicClaimed := false
+	claimedTopics := map[string]bool{}
 	for _, p := range pipelines {
 		for _, s := range p.Spec.Sources {
 			if s.Kubernetes != nil {
 				claimedNS = append(claimedNS, s.Kubernetes.Namespaces...)
 			}
-			if s.Kafka != nil && s.Kafka.Topic == opts.Platform.FeederTopic {
-				topicClaimed = true
+			if s.Kafka != nil {
+				claimedTopics[s.Kafka.Topic] = true
 			}
 		}
 	}
@@ -476,14 +492,20 @@ func (c *config) addPlatform(pipelines []spillwayv1alpha1.LogPipeline, opts Opti
 		}
 	}
 
-	if opts.Platform.FeederTopic == "" || topicClaimed {
+	var feeds []string
+	for _, f := range opts.Platform.Feeds {
+		if claimedTopics[f.Topic] {
+			continue
+		}
+		// From the oldest retained event the first time, then from committed
+		// offsets.
+		c.sources[f.ID] = kafkaSource(opts, f.Group, f.Topic, "earliest")
+		feeds = append(feeds, f.ID)
+	}
+	if len(feeds) == 0 {
 		return false
 	}
-	c.sources["wikimedia"] = kafkaSource(opts, "spillway-aggregator", opts.Platform.FeederTopic,
-		// The M1 consumer group predates teams and started from the oldest
-		// retained event; it now resumes from its committed offsets.
-		"earliest")
-	c.addPlatformRedact("redact_feed", "wikimedia")
+	c.addPlatformRedact("redact_feed", feeds...)
 	c.transforms["stamp"] = remap([]string{"redact_feed"}, "del(.source_type)\n"+stampVRL)
 	c.testStamp("stamp")
 	c.transforms["latency_metrics"] = map[string]any{
@@ -491,13 +513,14 @@ func (c *config) addPlatform(pipelines []spillwayv1alpha1.LogPipeline, opts Opti
 		"inputs":  []string{"stamp"},
 		"metrics": []any{latencyHistogram(map[string]any{"feeder": "{{ spillway.feeder }}"})},
 	}
-	c.testLatencyMetric("latency_metrics", "feeder", "wikimedia")
+	c.testLatencyMetric("latency_metrics", "feeder", feeds[0])
 	c.sinks["loki"] = map[string]any{
 		"type":     "loki",
 		"inputs":   []string{"stamp"},
 		"endpoint": opts.LokiEndpoint,
 		"encoding": map[string]any{"codec": "json"},
-		// Low-cardinality labels; wiki, title, user and so on stay in the line.
+		// Low-cardinality labels (Wikimedia's change types, GitHub's event
+		// types); wiki, title, repo, actor and so on stay in the line.
 		"labels": map[string]any{
 			"feeder": "{{ spillway.feeder }}",
 			"type":   "{{ type }}",
@@ -513,12 +536,12 @@ func (c *config) addPlatform(pipelines []spillwayv1alpha1.LogPipeline, opts Opti
 
 // addPlatformRedact masks every pattern. Its ID can't clash with a team's
 // components: those are <team>_<stage>, and "feed" and "pods" aren't stages.
-func (c *config) addPlatformRedact(id, input string) {
+func (c *config) addPlatformRedact(id string, inputs ...string) {
 	vrl, err := redact.VRL(redact.All())
 	if err != nil {
 		panic(err) // every built-in pattern has a filter
 	}
-	c.transforms[id] = remap([]string{input}, vrl)
+	c.transforms[id] = remap(inputs, vrl)
 	c.testRedact(id, redact.All())
 }
 

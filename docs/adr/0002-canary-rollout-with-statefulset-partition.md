@@ -26,7 +26,7 @@ Three things constrain the design:
 - **Promote** if, over the window:
   - the canary didn't restart;
   - its errors grew by no more than the stable pod's, plus an allowance: the larger of 5 and 0.1% of the events its sinks took in, so the allowance scales with traffic. Errors means `vector_component_errors_total`, plus `vector_http_client_errors_total`, plus unintentional discards;
-  - no sink stalled: none took events in without delivering any. A sink counts only if it delivers on the stable pod or exists only on the canary, so a shared outage isn't blamed on the canary.
+  - no sink stalled: none took events in without delivering any. A sink counts only if it delivers on the stable pod or exists only on the canary, so a shared outage isn't blamed on the canary. Only events a sink had received by a checkpoint, taken one batch timeout plus 15 s before the end of the bake, count (amended in M3.7; see below).
 
   Promotion sets `partition` to 0, so the remaining pods roll.
 - **Roll back** if the canary never becomes Ready (3-minute timeout), restarts, exceeds the error allowance, or has a stalled sink. The template's suffix is restored to the stable revision, so the canary pod returns to stable config.
@@ -89,3 +89,10 @@ Alternatives considered:
 - **A second, operator-owned canary StatefulSet:** it would isolate the canary fully, but needs its own Service routing and volumes, and the operator would own a whole workload Helm doesn't manage.
 - **One ConfigMap per revision, mounted by name:** the pod template's volume would change, and Helm owns that field (constraint 2).
 - **Vector's `--watch-config` hot reload:** there's no per-pod control. Every pod reloads when the ConfigMap changes.
+
+## Amendment (M3.7): judge stalls on events received by a checkpoint
+
+A low-rate, bursty source broke the stalled-sink check. The GitHub feeder delivers up to 300 events every few minutes, and a new team's consumer group starts at the latest offset. So the `oss` team's first events reached the canary in the last ~10 s of the bake. Its cold sink, batching for 60 s, hadn't uploaded them yet, and the canary was rolled back for "took in events for cold_s3 but delivered none in 2m0s". The sink was fine. Prometheus showed it receiving nothing until then.
+
+The operator now takes a **checkpoint** of both pods' health at the longest sink batch timeout plus 15 s before the end of the bake (45 s into a 2-minute bake with the 60 s cold sink, so 75 s before the end; it requeues to take it on time). A sink is stalled only if it had received events by the checkpoint and still delivered none by the end. Events that first arrive later aren't judged. A broken sink still shows up in the error comparison: a failing endpoint's retries are HTTP errors. With no checkpoint (an older operator's baseline, or a clock jump in tests), every event received counts, as before. `TestLateFirstEventsAreNotAStall` covers both cases. In kind, `oss` was then promoted.
+

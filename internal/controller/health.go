@@ -134,19 +134,20 @@ func parseMetrics(r io.Reader) (errors float64, sinks map[string]SinkCounts, err
 }
 
 // stalledSinks returns the sinks that received events between before and
-// after but sent none, and that aren't stalled on the stable pod too (a
-// shared outage isn't the canary's fault). A sink only the canary has counts.
-func stalledSinks(before, after, stableBefore, stableAfter PodHealth) []string {
-	stalled := func(b, a PodHealth, id string) bool {
-		bc, ac := b.Sinks[id], a.Sinks[id]
-		return ac.Received > bc.Received && ac.Sent == bc.Sent
+// due but had sent none by after, and that aren't stalled on the stable pod
+// too (a shared outage isn't the canary's fault). A sink only the canary has
+// counts. due is the checkpoint: events that arrived later may still be in a
+// batch that hasn't timed out.
+func stalledSinks(before, due, after, stableBefore, stableDue, stableAfter PodHealth) []string {
+	stalled := func(b, d, a PodHealth, id string) bool {
+		return d.Sinks[id].Received > b.Sinks[id].Received && a.Sinks[id].Sent == b.Sinks[id].Sent
 	}
 	var out []string
 	for id := range after.Sinks {
-		if !stalled(before, after, id) {
+		if !stalled(before, due, after, id) {
 			continue
 		}
-		if _, onStable := stableAfter.Sinks[id]; onStable && stalled(stableBefore, stableAfter, id) {
+		if _, onStable := stableAfter.Sinks[id]; onStable && stalled(stableBefore, stableDue, stableAfter, id) {
 			continue
 		}
 		out = append(out, id)

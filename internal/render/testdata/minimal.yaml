@@ -109,6 +109,22 @@ sources:
     topics:
     - spillway.pods
     type: kafka
+  github:
+    auto_offset_reset: earliest
+    bootstrap_servers: spillway-kafka-bootstrap.kafka.svc:9092
+    decoding:
+      codec: json
+    group_id: spillway-platform-github
+    headers_key: ""
+    key_field: ""
+    metrics:
+      topic_lag_metric: true
+    offset_key: ""
+    partition_key: ""
+    topic_key: ""
+    topics:
+    - github.events
+    type: kafka
   internal_metrics:
     scrape_interval_secs: 15
     type: internal_metrics
@@ -228,6 +244,7 @@ transforms:
   redact_feed:
     inputs:
     - wikimedia
+    - github
     source: |
       # Redact every string in the event except Spillway's own metadata.
       meta = .spillway

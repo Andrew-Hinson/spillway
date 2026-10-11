@@ -59,8 +59,17 @@ func TestStalledSinks(t *testing.T) {
 	// cold_s3 exists only on the canary.
 	stableBefore := h(map[string]SinkCounts{"hot_loki": {10, 10}, "loki_pods": {5, 5}})
 	stableAfter := h(map[string]SinkCounts{"hot_loki": {60, 60}, "loki_pods": {8, 5}})
-	got := stalledSinks(before, after, stableBefore, stableAfter)
+	// With the checkpoint at the end, every event received counts.
+	got := stalledSinks(before, after, after, stableBefore, stableAfter, stableAfter)
 	if len(got) != 1 || got[0] != "cold_s3" {
 		t.Errorf("stalled = %v, want [cold_s3]: delivering, idle and shared-outage sinks don't count", got)
+	}
+
+	// cold_s3's events all arrived after the checkpoint: its batch may not
+	// have timed out yet, so it isn't judged.
+	due := h(map[string]SinkCounts{"hot_loki": {30, 29}, "cold_s3": {0, 0}, "loki_pods": {7, 5}, "quiet": {3, 3}})
+	stableDue := h(map[string]SinkCounts{"hot_loki": {35, 35}, "loki_pods": {7, 5}})
+	if got := stalledSinks(before, due, after, stableBefore, stableDue, stableAfter); len(got) != 0 {
+		t.Errorf("stalled = %v, want none: cold_s3 received nothing by the checkpoint", got)
 	}
 }
