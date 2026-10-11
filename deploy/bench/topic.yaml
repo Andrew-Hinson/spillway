@@ -14,5 +14,5 @@ spec:
   replicas: 1
   config:
     retention.ms: 3600000          # 1 hour
-    retention.bytes: 1073741824    # 1 GiB per partition, 6 GiB in all
+    retention.bytes: 2147483648    # 2 GiB per partition, 12 GiB in all
     segment.bytes: 67108864        # 64 MiB

@@ -14,8 +14,10 @@ A step is **sustained** if, over its measured part:
   - the aggregators consumed at least 95% of what was produced (counters are
     scraped every 15 s, so a few percent of noise is expected; backlog is
     the strict test),
-  - Kafka consumer lag and both sink buffers grew by no more than 2 s of
-    traffic over it, by a linear fit (no growing backlog),
+  - Kafka consumer lag grew by no more than 5 s of traffic over it, and
+    both sink buffers by no more than 2 s, by a linear fit (no growing
+    backlog; lag is against offsets committed every 5 s, so it saws by
+    up to that much while the aggregators keep up),
   - no events were discarded, no component reported errors, and neither
     sink had a request rejected (a 429 from Loki is retried, so it isn't
     an error to Vector, but it means the sink is being throttled).
@@ -34,6 +36,7 @@ AGG = 'app_kubernetes_io_component="Aggregator"'
 TEAM = "bench"
 SOURCE = "bench_src_load"
 SINKS = ("hot_loki", "cold_s3")
+LAG_SLACK_SECS = 5
 # Pod name prefixes of the components whose CPU is reported.
 APPS = ["vector-aggregator", "spillway-dual-role", "loki", "s3", "loadgen", "vector-agent", "prometheus-server"]
 
@@ -209,7 +212,10 @@ def verdict(step, m):
         reasons.append(f"generator sent {achieved:,.0f}/s")
     if m["produced"] and m["consumed"] < 0.95 * m["produced"]:
         reasons.append(f"consumed {m['consumed'] / m['produced']:.0%} of produced")
-    if m["lag"][2] > slack:
+    # Lag is measured against committed offsets, which the Kafka source
+    # commits every 5 s (commit_interval_ms), so it saws between 0 and 5 s
+    # of traffic even when the aggregators keep up.
+    if m["lag"][2] > LAG_SLACK_SECS * rate:
         reasons.append(f"lag grew {m['lag'][2]:,.0f}")
     for s in SINKS:
         if m["buf_" + s][2] > slack:

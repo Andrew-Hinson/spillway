@@ -26,9 +26,9 @@ ts() { date -u +%H:%M:%S; }
 log() { echo "$(ts) $*" >&2; }
 reason() { $k get lp bench -o jsonpath='{.status.conditions[0].reason}' 2>/dev/null; }
 
-pf=
+pf=()
 cleanup() {
-  [[ -n $pf ]] && kill "$pf" 2>/dev/null
+  ((${#pf[@]})) && kill "${pf[@]}" 2>/dev/null
   $k -n bench delete job loadgen --ignore-not-found >/dev/null 2>&1 || true
   $k delete lp bench --ignore-not-found >/dev/null 2>&1 || true
   $k -n kafka delete kafkatopic bench.load --ignore-not-found >/dev/null 2>&1 || true
@@ -39,6 +39,21 @@ tag=$(cat go.mod go.sum $(find feeders/loadgen -type f | sort) | sha256sum | cut
 log "building spillway/loadgen:$tag"
 docker build -q -t "spillway/loadgen:$tag" -f feeders/loadgen/Dockerfile . >/dev/null
 bin/kind load docker-image "spillway/loadgen:$tag" --name spillway >/dev/null
+
+# A LogPipeline applied mid-canary can stay RollingOut (#56), and the
+# last run's cleanup starts one: wait until the operator is idle.
+idle() {
+  [[ -z $($k -n vector get sts vector-aggregator -o jsonpath='{.metadata.annotations.spillway\.dev/canary-config}') ]] &&
+    [[ $($k -n vector get sts vector-aggregator -o jsonpath='{.status.updateRevision}') == \
+       $($k -n vector get sts vector-aggregator -o jsonpath='{.status.currentRevision}') ]] &&
+    [[ $($k -n vector get sts vector-aggregator -o jsonpath='{.status.readyReplicas}') == \
+       $($k -n vector get sts vector-aggregator -o jsonpath='{.spec.replicas}') ]]
+}
+start=$SECONDS
+until idle; do
+  ((SECONDS - start < 600)) || { log "TIMEOUT waiting for the operator to finish its rollout"; exit 1; }
+  sleep 5
+done
 
 log "creating bench.load and the bench team"
 $k apply -f deploy/bench/topic.yaml >/dev/null
@@ -66,7 +81,8 @@ $k -n bench wait job/loadgen --for=condition=Complete --timeout="$((n * mins + 1
 $k -n bench logs job/loadgen > "$OUT/loadgen.log"
 log "load generator done; its log is in $OUT/loadgen.log"
 
-$k -n observability port-forward svc/prometheus-server 9090:80 >/dev/null 2>&1 & pf=$!
+$k -n observability port-forward svc/prometheus-server 9090:80 >/dev/null 2>&1 & pf+=($!)
+$k -n observability port-forward svc/loki 3100:3100 >/dev/null 2>&1 & pf+=($!)
 sleep 2
 log "waiting up to 15 min for the backlog to drain, then reporting"
 python3 bench/throughput.py --log "$OUT/loadgen.log" --warmup "$WARMUP" --wait-drain 900 | tee "$OUT/report.md"
