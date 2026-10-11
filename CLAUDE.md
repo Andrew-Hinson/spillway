@@ -41,6 +41,7 @@ Spillway is a Kubernetes log platform: one `LogPipeline` spec per team becomes a
 | `make cold-check` | Sync the cold bucket and check every object: `team=…/date=…/` keys matching their events, gzip, no fixture values |
 | `make storage` | Local S3 (Silo, a MinIO fork, in `storage`), the `spillway-cold` bucket, and generated credentials in the `cold-storage` Secret (also copied to `vector`) |
 | `make redaction-fp DURATION=600` | Capture live Wikimedia events and count what each redaction pattern masks |
+| `make bench STEPS=… STEP=4m` | Stepped-load benchmark (M4.1): `feeders/loadgen` into `bench.load`, through the `bench` team (`deploy/bench`), reported by `bench/throughput.py`. Against a fresh `make up`; don't run CPU-heavy work alongside it |
 | `make tools` | Pinned kind, kubectl, helm, golangci-lint, controller-gen, setup-envtest and vector, in `./bin` |
 
 ## How the system fits together
@@ -81,6 +82,8 @@ Spillway is a Kubernetes log platform: one `LogPipeline` spec per team becomes a
 - **Vector `dedupe`:** a missing match field counts as a value, so every event without it is a "duplicate" of the first. Route those around it.
 - **Vector timing:** its metrics endpoint comes up a few seconds after the pod is Ready. On shutdown it waits up to the 60 s grace period to drain sinks, which makes rolling back a stuck sink slow.
 - **GitHub feeder:** unauthenticated, 60 requests an hour, and the API caches for 5 minutes, so it polls every few minutes and gets up to 300 events each time. It paces each poll's events over the wait before the next. Without pacing, a team's budget throttle kept the start of each burst, and push, create and delete events (later in GitHub's order) never reached hot. Don't spend the rate limit on manual `curl`s while it runs; a token goes in the optional `github-feeder` Secret (key `token`).
+- **Vector metrics under load:** buffer depth is `vector_buffer_size_events` (not `vector_buffer_events`). Idle components' series expire, so for exact totals take each series' `max_over_time` rather than its value at the end. A histogram whose flow stalls (backpressure) is expired and republished from a different base, so `increase()` over it is wrong: `bench/throughput.py` refuses latency for a step with a reset. A sink's 429s are retried, not counted in `component_errors_total`; read `vector_http_client_responses_total` by status. Kafka lag can read slightly negative.
+- **Loki limits:** stock limits (3 MB/s per stream) capped one team's hot path near 2,700 events/s, since `hot_loki` makes one stream per team and source. `deploy/platform/loki/values.yaml` raises them.
 - **Kafka source counts:** a new team's Kafka source has its own consumer group, so its events flow from the canary pod before promotion.
 - **Generated files:** a new example in `examples/` changes the goldens and the pinned counts in `cmd/spillwayctl/main_test.go`.
 

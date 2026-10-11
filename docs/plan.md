@@ -94,7 +94,7 @@ Each line is one GitHub issue: the title, then the acceptance criteria after the
 
 ### M4 — Proof and polish
 
-1. [ ] Benchmark harness — stepped load; throughput and p99 end-to-end latency written to `docs/results`
+1. [x] Benchmark harness — stepped load; throughput and p99 end-to-end latency written to `docs/results`
 2. [ ] Chaos experiments — aggregator kill, sink outage, disk full; each asserts produced = delivered + counted drops (sampled, throttled), with duplicates removed by event ID
 3. [ ] Cloud environment — Terraform plus Argo CD; torn down after benchmarks to keep cost near zero
 4. [ ] README and ADRs — architecture diagram, quickstart, results table, three to five design decisions written up

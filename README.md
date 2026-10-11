@@ -120,6 +120,7 @@ render: ok (1 pipeline)
 | `make baseline` | Volume and latency over the last 15 minutes, as Markdown |
 | `make fixtures` | Inject known, fictional PII into the live streams (`RATE=` per second, default 1): recentchange-shaped events into the Wikimedia topic, and JSON log lines in the `fixtures` namespace. Each is tagged `spillway.fixture: {id, pattern}`, so it can be counted in any sink |
 | `make leak-check` | Search every hot-sink stream for fixture values over `WINDOW` (default 15m). Fails on any leak, or if no fixtures arrived |
+| `make bench` | Stepped-load benchmark against a fresh `make up`: synthetic feeder events at each rate in `STEPS` for `STEP` each, through a team with redaction, dedupe, hot and cold. Reports throughput, backlog, drops and p99 latency per step, and exact end-to-end counts |
 | `make redaction-fp` | Capture `DURATION` seconds of the live Wikimedia stream and report what each redaction pattern masks |
 | `make help` | Every target |
 
@@ -150,9 +151,10 @@ examples/            example LogPipeline specs
 feeders/wikimedia/   Go SSE → Kafka feeder
 feeders/github/      Go poller of GitHub's public events → Kafka feeder
 feeders/fixtures/    fictional-PII fixture injector (Kafka and pod logs)
+feeders/loadgen/     stepped-rate load generator of synthetic feeder events, for the benchmark
 vector/              agent and aggregator configs, Helm values, unit tests
-deploy/              kind cluster, platform Helm values and manifests (including local S3 storage), feeder and operator manifests (generated CRD and RBAC)
+deploy/              kind cluster, platform Helm values and manifests (including local S3 storage), feeder, benchmark and operator manifests (generated CRD and RBAC)
 dashboards/          Grafana dashboards: pipeline health, and cost per team
-bench/               measurements: baseline, M2 gate, redaction false positives, fixture leak check, per-team drops and budgets, cold storage check, cost report
+bench/               measurements: baseline, M2 gate, redaction false positives, fixture leak check, per-team drops and budgets, cold storage check, cost report, stepped-load benchmark
 docs/                build plan, results and ADRs
 ```

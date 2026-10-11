@@ -1,0 +1,61 @@
+# Load generator for the benchmark (bench/m4_bench.sh): stepped rates of
+# synthetic feeder events into bench.load. The script fills in the image tag,
+# STEPS and STEP_DURATION, and deletes the Job when it's done.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: bench
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: loadgen
+  namespace: bench
+  labels:
+    app.kubernetes.io/name: loadgen
+    app.kubernetes.io/part-of: spillway
+spec:
+  backoffLimit: 0   # a restart would replay the schedule from the first step
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: loadgen
+        app.kubernetes.io/part-of: spillway
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8080"
+    spec:
+      restartPolicy: Never
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: loadgen
+          image: spillway/loadgen:dev
+          imagePullPolicy: Never   # loaded into kind by bench/m4_bench.sh
+          args: ["-steps", "$(STEPS)", "-step-duration", "$(STEP_DURATION)"]
+          env:
+            - name: KAFKA_BROKERS
+              value: spillway-kafka-bootstrap.kafka.svc:9092
+            - name: KAFKA_TOPIC
+              value: bench.load
+            - name: STEPS
+              value: "250,500,1000"
+            - name: STEP_DURATION
+              value: "3m"
+          ports:
+            - name: metrics
+              containerPort: 8080
+          resources:
+            requests:
+              cpu: 500m
+              memory: 128Mi
+            limits:
+              memory: 1Gi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
