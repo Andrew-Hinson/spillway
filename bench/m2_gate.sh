@@ -9,10 +9,10 @@
 #      aggregator
 #   3. a config change that fails at runtime is canaried and rolled back
 #
-# Step 3 points the operator's cold storage at an endpoint that doesn't exist
-# (MinIO isn't deployed until M3), so a cold-routed pipeline fails at runtime
-# while passing every offline check. The script restores the operator and
-# deletes its LogPipelines at the end.
+# Step 3 points the operator's cold storage at an endpoint that doesn't exist,
+# so a cold-routed pipeline fails at runtime while passing every offline
+# check. The script restores the operator's args from
+# deploy/operator/operator.yaml and deletes its LogPipelines at the end.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 export KUBECONFIG="$PWD/.kubeconfig"
@@ -44,8 +44,11 @@ cleanup() {
   wait "$pf1" "$pf2" 2>/dev/null || true
   $k delete lp edits edits-copy content --ignore-not-found >/dev/null 2>&1 || true
   $k -n spillway-system patch deployment spillway-operator --type json \
-    -p '[{"op":"remove","path":"/spec/template/spec/containers/0/args"}]' >/dev/null 2>&1 || true
+    -p '[{"op":"replace","path":"/spec/template/spec/containers/0/args","value":'"$operator_args"'}]' >/dev/null 2>&1 || true
 }
+# The operator's own args, restored at the end.
+operator_args=$($k -n spillway-system get deployment spillway-operator -o jsonpath='{.spec.template.spec.containers[0].args}')
+[[ -n $operator_args ]] || operator_args='[]'
 trap cleanup EXIT
 sleep 3
 loki() { # loki QUERY: instant query; prints "label=value ..." (or "total=value")
@@ -131,11 +134,11 @@ echo
 echo "## 3. A change that fails at runtime is canaried and rolled back"
 log "configuring the operator's cold storage at an endpoint that doesn't exist"
 $k -n spillway-system patch deployment spillway-operator --type json \
-  -p '[{"op":"add","path":"/spec/template/spec/containers/0/args","value":["--cold-bucket=spillway-cold","--cold-endpoint=http://minio.storage.svc:9000"]}]' >/dev/null
+  -p '[{"op":"add","path":"/spec/template/spec/containers/0/args","value":["--cold-bucket=spillway-cold","--cold-endpoint=http://no-such-s3.storage.svc:9000"]}]' >/dev/null
 $k -n spillway-system rollout status deploy/spillway-operator --timeout=2m >/dev/null
 stable_before=$(sts '{.metadata.annotations.spillway\.dev/stable-config}')
 log "spillwayctl validate examples/content.yaml (cold storage configured): every offline check passes"
-bin/spillwayctl validate --vector-bin bin/vector --cold-bucket spillway-cold --cold-endpoint http://minio.storage.svc:9000 examples/content.yaml | sed 's/^/    /'
+bin/spillwayctl validate --vector-bin bin/vector --cold-bucket spillway-cold --cold-endpoint http://no-such-s3.storage.svc:9000 examples/content.yaml | sed 's/^/    /'
 start=$SECONDS
 log "kubectl apply -f examples/content.yaml"
 $k apply -f examples/content.yaml | sed 's/^/    /'

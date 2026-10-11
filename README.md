@@ -11,7 +11,7 @@ Spillway is a Kubernetes log platform that will turn a short YAML spec per team 
 - **Canaried:** new config goes to one aggregator first, and is promoted only if its error rate and delivery hold.
 - **Reported:** each pipeline is marked Ready, or Invalid or CanaryFailed with the reason.
 
-The [M2 gate run](docs/results/m2-gate.md) shows a team's first event queryable 5 s after `kubectl apply`, and three of three bad configs blocked: one at apply time, one Invalid, and one rolled back by the canary. Config changes go out as canaries ([ADR 0002](docs/adr/0002-canary-rollout-with-statefulset-partition.md)), and `spillwayctl` runs the same checks without a cluster. **M3 (policy features) is under way.** Redaction is on by default, for teams and for unclaimed data ([ADR 0003](docs/adr/0003-redaction-on-by-default.md)). A fixture injector mixes known, fictional PII into the live streams, and `make leak-check` searches the hot sink for it: [0 of 5,054 fixtures leaked](docs/results/m3.2-redaction.md), and the patterns change 0.015% of live Wikimedia events. Sampling keeps each level's share as specified, on Kafka events and on pod logs, which are now parsed and given a normalized level ([ADR 0004](docs/adr/0004-parse-pod-logs-and-trust-only-the-stamp.md)). Replayed events are dropped by event ID, and every drop is counted per team: in kind, 300 of 300 replays removed and info logs kept at 24% against a spec of 25% ([results](docs/results/m3.3-sampling.md)). A team's budget is a cap across all aggregators: each enforces an even share, and pod logs travel through Kafka so they're shared evenly too. A 10/s budget measured 9.8/s for Kafka and pod-log teams alike, where it had been 17.5/s and 7.9/s ([ADR 0005](docs/adr/0005-budgets-split-across-aggregators.md), [results](docs/results/m3.4-budgets.md)). See the [build plan](docs/plan.md).
+The [M2 gate run](docs/results/m2-gate.md) shows a team's first event queryable 5 s after `kubectl apply`, and three of three bad configs blocked: one at apply time, one Invalid, and one rolled back by the canary. Config changes go out as canaries ([ADR 0002](docs/adr/0002-canary-rollout-with-statefulset-partition.md)), and `spillwayctl` runs the same checks without a cluster. **M3 (policy features) is under way.** Redaction is on by default, for teams and for unclaimed data ([ADR 0003](docs/adr/0003-redaction-on-by-default.md)). A fixture injector mixes known, fictional PII into the live streams, and `make leak-check` searches the hot sink for it: [0 of 5,054 fixtures leaked](docs/results/m3.2-redaction.md), and the patterns change 0.015% of live Wikimedia events. Sampling keeps each level's share as specified, on Kafka events and on pod logs, which are now parsed and given a normalized level ([ADR 0004](docs/adr/0004-parse-pod-logs-and-trust-only-the-stamp.md)). Replayed events are dropped by event ID, and every drop is counted per team: in kind, 300 of 300 replays removed and info logs kept at 24% against a spec of 25% ([results](docs/results/m3.3-sampling.md)). A team's budget is a cap across all aggregators: each enforces an even share, and pod logs travel through Kafka so they're shared evenly too. A 10/s budget measured 9.8/s for Kafka and pod-log teams alike, where it had been 17.5/s and 7.9/s ([ADR 0005](docs/adr/0005-budgets-split-across-aggregators.md), [results](docs/results/m3.4-budgets.md)). Teams routed cold get their complete redacted stream in object storage, partitioned by team and date and gzipped: 52,879 events in 98 objects, 0 fixture values ([results](docs/results/m3.5-cold-path.md)). See the [build plan](docs/plan.md).
 
 ## Architecture
 
@@ -106,7 +106,7 @@ broken.yaml (broken): INVALID
 render: ok (1 pipeline)
 ```
 
-Cold storage (MinIO) arrives in M3. Until then, pipelines that route to cold storage are marked Invalid instead of being rolled out with a sink that has nowhere to write.
+`routing: {cold: true}` sends the team's complete redacted stream, before sampling and its budget, to object storage, as gzip JSON lines under `team=<team>/date=<YYYY-MM-DD>/`. Locally that's Silo, a maintained MinIO fork installed by `make up` ([ADR 0006](docs/adr/0006-silo-for-local-cold-storage.md)), and `make cold-check` checks every object in it. An operator started without `--cold-bucket` marks cold-routed pipelines Invalid instead of rolling out a sink with nowhere to write.
 
 ## Development
 
@@ -149,8 +149,8 @@ examples/            example LogPipeline specs
 feeders/wikimedia/   Go SSE → Kafka feeder
 feeders/fixtures/    fictional-PII fixture injector (Kafka and pod logs)
 vector/              agent and aggregator configs, Helm values, unit tests
-deploy/              kind cluster, platform Helm values, feeder and operator manifests (generated CRD and RBAC)
+deploy/              kind cluster, platform Helm values and manifests (including local S3 storage), feeder and operator manifests (generated CRD and RBAC)
 dashboards/          Grafana dashboards
-bench/               measurements: baseline, M2 gate, redaction false positives, fixture leak check, per-team drops and budgets
+bench/               measurements: baseline, M2 gate, redaction false positives, fixture leak check, per-team drops and budgets, cold storage check
 docs/                build plan, results and ADRs
 ```

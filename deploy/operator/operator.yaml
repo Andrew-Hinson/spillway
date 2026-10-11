@@ -75,6 +75,10 @@ spec:
         - name: operator
           image: spillway/operator:dev
           imagePullPolicy: Never   # loaded into kind by `make operator`
+          # Cold storage: the bucket `make storage` creates (deploy/platform/storage).
+          args:
+            - --cold-bucket=spillway-cold
+            - --cold-endpoint=http://s3.storage.svc:9000
           ports:
             - name: metrics
               containerPort: 8080

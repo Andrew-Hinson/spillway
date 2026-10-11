@@ -114,7 +114,7 @@ cluster: docker-check $(KIND) $(KUBECTL) ## Create the kind cluster (idempotent)
 	$(KUBECTL) get nodes -o wide
 
 .PHONY: platform
-platform: kafka loki prometheus grafana ## Install Kafka, Loki, Prometheus and Grafana (idempotent)
+platform: kafka loki prometheus grafana storage ## Install Kafka, Loki, Prometheus, Grafana and cold storage (idempotent)
 
 .PHONY: kafka
 kafka: $(HELM) $(KUBECTL) ## Install the Strimzi operator and a single-node Kafka cluster
@@ -129,6 +129,22 @@ loki: $(HELM) ## Install Loki (monolithic, filesystem storage)
 	$(HELM_INSTALL) loki loki --repo $(GRAFANA_CHARTS) \
 		--version $(LOKI_CHART_VERSION) --namespace observability --create-namespace \
 		-f $(PLATFORM)/loki/values.yaml
+
+.PHONY: storage
+storage: $(KUBECTL) ## Install S3-compatible cold storage (Silo, a MinIO fork) and the spillway-cold bucket
+	$(KUBECTL) create namespace storage --dry-run=client -o yaml | $(KUBECTL) apply -f -
+	$(KUBECTL) create namespace vector --dry-run=client -o yaml | $(KUBECTL) apply -f -
+	@# Random credentials, made once and copied to the aggregators' namespace.
+	@$(KUBECTL) -n storage get secret cold-storage >/dev/null 2>&1 || \
+		$(KUBECTL) -n storage create secret generic cold-storage \
+			--from-literal=AWS_ACCESS_KEY_ID=spillway-$$(openssl rand -hex 4) \
+			--from-literal=AWS_SECRET_ACCESS_KEY=$$(openssl rand -hex 20)
+	@$(KUBECTL) -n storage get secret cold-storage -o json | python3 -c 'import json,sys; s=json.load(sys.stdin); \
+		print(json.dumps({"apiVersion":"v1","kind":"Secret","metadata":{"name":"cold-storage","namespace":"vector"},"data":s["data"]}))' | \
+		$(KUBECTL) apply -f -
+	$(KUBECTL) apply -f $(PLATFORM)/storage/s3.yaml
+	$(KUBECTL) -n storage rollout status deployment/s3 --timeout=3m
+	$(KUBECTL) -n storage wait job/create-bucket --for=condition=Complete --timeout=3m
 
 .PHONY: prometheus
 prometheus: $(HELM) ## Install Prometheus (scrapes pods annotated prometheus.io/scrape)
@@ -233,6 +249,17 @@ leak-check: $(KUBECTL) ## Search the hot sink for injected fixture values over W
 		$(KUBECTL) -n observability port-forward svc/prometheus-server 9090:80 >/dev/null 2>&1 & pf2=$$!; \
 		trap 'kill $$pf1 $$pf2' EXIT; sleep 2; \
 		python3 bench/leakcheck.py --window $(or $(WINDOW),15m)
+
+.PHONY: cold-check
+cold-check: $(KUBECTL) docker-check ## Check every object in cold storage: team/date keys, gzip, and no fixture values
+	@dir=$$(mktemp -d); trap 'rm -rf $$dir; kill $$pf' EXIT; \
+		$(KUBECTL) -n storage port-forward svc/s3 9000:9000 >/dev/null 2>&1 & pf=$$!; sleep 2; \
+		docker run --rm --network host --user $$(id -u):$$(id -g) -v $$dir:/out \
+			-e AWS_ACCESS_KEY_ID=$$($(KUBECTL) -n storage get secret cold-storage -o jsonpath='{.data.AWS_ACCESS_KEY_ID}' | base64 -d) \
+			-e AWS_SECRET_ACCESS_KEY=$$($(KUBECTL) -n storage get secret cold-storage -o jsonpath='{.data.AWS_SECRET_ACCESS_KEY}' | base64 -d) \
+			-e AWS_DEFAULT_REGION=us-east-1 -e HOME=/tmp amazon/aws-cli:2.37.12 \
+			--endpoint-url http://localhost:9000 s3 sync --only-show-errors s3://spillway-cold /out && \
+		python3 bench/coldcheck.py $$dir
 
 .PHONY: sampling-check
 sampling-check: $(KUBECTL) ## Report each team's dedupe, sampling and budget drops over WINDOW (default 10m); REF=team=ref compares levels to an unsampled team
