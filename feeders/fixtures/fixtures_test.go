@@ -50,7 +50,7 @@ func TestValuesAreDeterministicAndFictional(t *testing.T) {
 func TestEventsCarryTheValueAndATag(t *testing.T) {
 	f := Next(6) // phone
 	now := time.Date(2026, 10, 9, 12, 0, 0, 0, time.UTC)
-	for name, render := range map[string]func(Fixture, time.Time) ([]byte, error){"kafka": KafkaEvent, "stdout": LogLine} {
+	for name, render := range map[string]func(Fixture, time.Time) ([]byte, error){"kafka": KafkaEvent, "github": GitHubEvent, "stdout": LogLine} {
 		b, err := render(f, now)
 		if err != nil {
 			t.Fatal(err)

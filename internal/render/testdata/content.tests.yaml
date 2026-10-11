@@ -141,6 +141,28 @@ tests:
       type: vrl
     extract_from: content_cold
 - inputs:
+  - insert_at: content_sample
+    source: '. = set!(value: {"message": "m"}, path: ["type"], data: "UNLISTED")'
+    type: vrl
+  name: content_sample keeps levels it doesn't list
+  outputs:
+  - conditions:
+    - source: |
+        assert_eq!(.message, "m")
+      type: vrl
+    extract_from: content_sample
+- inputs:
+  - insert_at: content_sample
+    source: '. = {"message": "m"}'
+    type: vrl
+  name: content_sample keeps events without a level
+  outputs:
+  - conditions:
+    - source: |
+        assert_eq!(.message, "m")
+      type: vrl
+    extract_from: content_sample
+- inputs:
   - insert_at: content_budget
     source: '. = {"message": "m"}'
     type: vrl

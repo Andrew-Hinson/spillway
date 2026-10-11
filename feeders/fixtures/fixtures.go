@@ -78,6 +78,27 @@ func KafkaEvent(f Fixture, now time.Time) ([]byte, error) {
 	})
 }
 
+// GitHubEvent renders f as a GitHub public event, for pipelines reading the
+// GitHub feed: an issue comment (a type examples/oss.yaml keeps whole) with
+// the value in the comment body and in a nested field.
+func GitHubEvent(f Fixture, now time.Time) ([]byte, error) {
+	return json.Marshal(map[string]any{
+		"id":         fmt.Sprintf("fixture-%d", f.ID),
+		"type":       "IssueCommentEvent",
+		"public":     true,
+		"created_at": now.UTC().Format(time.RFC3339),
+		"actor":      map[string]any{"login": "fixture-bot"},
+		"repo":       map[string]any{"name": "fixtures/spillway"},
+		"payload": map[string]any{
+			"action":  "created",
+			"comment": map[string]any{"body": fmt.Sprintf("please contact %s about this issue", f.Value), "contact": f.Value},
+		},
+		"spillway": stamp{
+			EventID: uuid.NewString(), ProducedAt: now.UTC(), Feeder: "fixtures", Fixture: f.Tag,
+		},
+	})
+}
+
 // LogLine renders f as an application log line, for pipelines that read the
 // injector's pod logs. It's a warning, so level-based sampling keeps it.
 func LogLine(f Fixture, now time.Time) ([]byte, error) {

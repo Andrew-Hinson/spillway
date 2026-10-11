@@ -172,7 +172,7 @@ sources:
 transforms:
   content_budget:
     inputs:
-    - content_redact
+    - content_sample
     threshold: 500
     type: throttle
     window_secs: 10
@@ -227,6 +227,16 @@ transforms:
       meta = .spillway
       . = redact(., filters: [r'[\p{L}\p{N}._%+-]+(?:@|%40)[\p{L}\p{N}.-]+\.\p{L}{2,}', r'MBR-\d{8}', r'(?:\+1[ .-]?)?(?:\(\d{3}\) ?|\d{3}[ .-])\d{3}[ .-]\d{4}', r'\d{3}-\d{2}-\d{4}'])
       if meta != null { .spillway = meta }
+    type: remap
+  content_sample:
+    drop_on_abort: true
+    inputs:
+    - content_redact
+    source: |
+      keep = {"categorize": 10, "log": 50}
+      level = downcase(to_string(get(., ["type"]) ?? null) ?? "")
+      percent = int(get(keep, [level]) ?? null) ?? 100
+      if random_int(0, 100) >= percent { abort }
     type: remap
   edits_budget:
     inputs:

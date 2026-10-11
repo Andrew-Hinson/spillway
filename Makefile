@@ -271,6 +271,12 @@ cold-check: $(KUBECTL) docker-check ## Check every object in cold storage: team/
 			--endpoint-url http://localhost:9000 s3 sync --only-show-errors s3://spillway-cold /out && \
 		python3 bench/coldcheck.py $$dir
 
+.PHONY: volume
+volume: $(KUBECTL) ## Hot-storage volume against volume in over WINDOW (default 15m), next to the M1 baseline
+	@$(KUBECTL) -n observability port-forward svc/prometheus-server 9090:80 >/dev/null 2>&1 & pf=$$!; \
+		trap 'kill $$pf' EXIT; sleep 2; \
+		python3 bench/volume.py --window $(or $(WINDOW),15m)
+
 .PHONY: cost-report
 cost-report: $(KUBECTL) ## Volume and estimated cost per team, hot vs cold, over WINDOW (default 30m); the cost dashboard as Markdown
 	@$(KUBECTL) -n observability port-forward svc/prometheus-server 9090:80 >/dev/null 2>&1 & pf=$$!; \
@@ -294,6 +300,10 @@ redaction-fp: $(VECTOR) ## Measure redaction false positives on DURATION seconds
 .PHONY: m2-gate
 m2-gate: $(KUBECTL) spillwayctl ## Run the M2 gate demo against a fresh `make up` (see docs/results/m2-gate.md)
 	bench/m2_gate.sh
+
+.PHONY: m3-gate
+m3-gate: $(KUBECTL) ## Run the M3 gate demo against a fresh `make up` (WINDOW, default 15m; see docs/results/m3-gate.md)
+	bench/m3_gate.sh
 
 .PHONY: test
 test: $(SETUP_ENVTEST) $(VECTOR) ## Run Go unit tests, including CRD validation against a local API server

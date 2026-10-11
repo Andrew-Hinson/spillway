@@ -1,4 +1,6 @@
-# Content: the Wikimedia edit stream from Kafka, rate-capped, kept hot and cold.
+# Content: the Wikimedia edit stream from Kafka, with categorize events
+# thinned to a tenth and log events to half, rate-capped hot, and kept whole
+# in cold storage.
 apiVersion: spillway.dev/v1alpha1
 kind: LogPipeline
 metadata:
@@ -9,6 +11,11 @@ spec:
     - name: wikimedia
       kafka:
         topic: wikimedia.recentchange
+  sampling:
+    levelField: type
+    keepPercent:
+      categorize: 10
+      log: 50
   budget:
     maxEventsPerSec: 100
   routing:
