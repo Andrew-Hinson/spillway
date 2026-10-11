@@ -1,6 +1,6 @@
 # ADR 0006: Silo, a MinIO fork, for local cold storage
 
-Status: proposed · 2026-10-10 · M3.5
+Status: accepted · 2026-10-10 · M3.5
 
 ## Context
 
