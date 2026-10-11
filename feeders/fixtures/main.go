@@ -29,18 +29,20 @@ import (
 )
 
 type config struct {
-	brokers    string
-	topic      string
-	stdout     bool
-	rate       float64
-	startID    int64
-	listenAddr string
+	brokers     string
+	topic       string
+	githubTopic string
+	stdout      bool
+	rate        float64
+	startID     int64
+	listenAddr  string
 }
 
 func main() {
 	var cfg config
 	flag.StringVar(&cfg.brokers, "brokers", env("KAFKA_BROKERS", ""), "comma-separated Kafka seed brokers; empty disables the Kafka output")
-	flag.StringVar(&cfg.topic, "topic", env("KAFKA_TOPIC", "wikimedia.recentchange"), "topic to inject fixtures into")
+	flag.StringVar(&cfg.topic, "topic", env("KAFKA_TOPIC", "wikimedia.recentchange"), "topic to inject recentchange-shaped fixtures into")
+	flag.StringVar(&cfg.githubTopic, "github-topic", env("GITHUB_TOPIC", "github.events"), "topic to inject GitHub-event-shaped fixtures into; empty disables")
 	flag.BoolVar(&cfg.stdout, "stdout", env("STDOUT", "true") == "true", "also write fixtures to stdout as JSON log lines (for pod-log pipelines)")
 	flag.Float64Var(&cfg.rate, "rate", 1, "fixtures per second, per output")
 	// Fixture IDs start from the clock, so a restarted injector doesn't reuse them.
@@ -71,7 +73,7 @@ func newMetrics(reg prometheus.Registerer) metrics {
 	m := metrics{
 		injected: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "spillway_fixtures_injected_total",
-			Help: "Fixtures injected, by PII pattern and output (kafka or stdout).",
+			Help: "Fixtures injected, by PII pattern and output (kafka, github or stdout).",
 		}, []string{"pattern", "output"}),
 		errors: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "spillway_fixtures_errors_total",
@@ -110,8 +112,8 @@ func run(ctx context.Context, cfg config, log *slog.Logger, stdout io.Writer) er
 		}
 	}()
 
-	log.Info("injecting fixtures", "rate", cfg.rate, "kafka", cfg.brokers != "", "topic", cfg.topic, "stdout", cfg.stdout, "start_id", cfg.startID)
-	inj := &injector{kafka: kafka, stdout: stdout, writeStdout: cfg.stdout, metrics: m, log: log, now: time.Now}
+	log.Info("injecting fixtures", "rate", cfg.rate, "kafka", cfg.brokers != "", "topic", cfg.topic, "github_topic", cfg.githubTopic, "stdout", cfg.stdout, "start_id", cfg.startID)
+	inj := &injector{kafka: kafka, githubTopic: cfg.githubTopic, stdout: stdout, writeStdout: cfg.stdout, metrics: m, log: log, now: time.Now}
 	ticker := time.NewTicker(time.Duration(float64(time.Second) / cfg.rate))
 	defer ticker.Stop()
 	for id := cfg.startID; ; id++ {
@@ -132,6 +134,7 @@ func run(ctx context.Context, cfg config, log *slog.Logger, stdout io.Writer) er
 // injector writes one fixture to each configured output.
 type injector struct {
 	kafka       *kgo.Client
+	githubTopic string // also produce GitHub-shaped fixtures here, if set
 	stdout      io.Writer
 	writeStdout bool
 	metrics     metrics
@@ -142,19 +145,9 @@ type injector struct {
 func (in *injector) inject(ctx context.Context, f Fixture) {
 	now := in.now()
 	if in.kafka != nil {
-		ev, err := KafkaEvent(f, now)
-		if err != nil {
-			in.metrics.errors.WithLabelValues("kafka").Inc()
-			in.log.Error("encoding fixture", "err", err)
-		} else {
-			in.kafka.Produce(ctx, &kgo.Record{Value: ev}, func(_ *kgo.Record, err error) {
-				if err != nil {
-					in.metrics.errors.WithLabelValues("kafka").Inc()
-					in.log.Warn("producing fixture", "id", f.ID, "err", err)
-					return
-				}
-				in.metrics.injected.WithLabelValues(f.Pattern, "kafka").Inc()
-			})
+		in.produce(ctx, f, "kafka", "", KafkaEvent, now)
+		if in.githubTopic != "" {
+			in.produce(ctx, f, "github", in.githubTopic, GitHubEvent, now)
 		}
 	}
 	if in.writeStdout {
@@ -168,6 +161,25 @@ func (in *injector) inject(ctx context.Context, f Fixture) {
 		}
 		in.metrics.injected.WithLabelValues(f.Pattern, "stdout").Inc()
 	}
+}
+
+// produce renders f and produces it to topic ("" for the default topic),
+// counting it under output.
+func (in *injector) produce(ctx context.Context, f Fixture, output, topic string, render func(Fixture, time.Time) ([]byte, error), now time.Time) {
+	ev, err := render(f, now)
+	if err != nil {
+		in.metrics.errors.WithLabelValues(output).Inc()
+		in.log.Error("encoding fixture", "output", output, "err", err)
+		return
+	}
+	in.kafka.Produce(ctx, &kgo.Record{Topic: topic, Value: ev}, func(_ *kgo.Record, err error) {
+		if err != nil {
+			in.metrics.errors.WithLabelValues(output).Inc()
+			in.log.Warn("producing fixture", "output", output, "id", f.ID, "err", err)
+			return
+		}
+		in.metrics.injected.WithLabelValues(f.Pattern, output).Inc()
+	})
 }
 
 func env(key, def string) string {

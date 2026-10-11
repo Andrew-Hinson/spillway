@@ -6,7 +6,7 @@ Spillway is a Kubernetes log platform: one `LogPipeline` spec per team becomes a
 
 - **Progress:** [`docs/plan.md`](docs/plan.md) has the milestones, the gate for each, and a checkbox per work item. Each item is a GitHub issue titled `[Mx.y] …` with its acceptance criteria. `gh issue list` shows what's open.
 - **Decisions:** [`docs/adr/`](docs/adr). 0001: validation with Vector bundled in the operator image. 0002: canary rollout via StatefulSet partition, quarantine and last-good specs. 0003: redaction on by default, with boundary-free patterns. 0004: pod logs parsed, with only the feeder stamp trusted from an app's `spillway`. 0005: budgets split evenly across the aggregators, over a 10 s window, with pod logs through Kafka so they spread evenly. 0006: Silo (a maintained MinIO fork) for local cold storage, since MinIO no longer publishes images.
-- **Measurements:** [`docs/results/`](docs/results): the M1 baseline, the M2 gate run, M3.2's redaction false positives and leak check, M3.3's sampling, dedupe and per-team drops, M3.4's budgets, M3.5's cold path, M3.6's cost attribution, and M3.7's GitHub feeder.
+- **Measurements:** [`docs/results/`](docs/results): the M1 baseline, the M2 and M3 gate runs, M3.2's redaction false positives and leak check, M3.3's sampling, dedupe and per-team drops, M3.4's budgets, M3.5's cold path, M3.6's cost attribution, and M3.7's GitHub feeder.
 - **Why something is the way it is:** the PR descriptions (`gh pr view N`) record the design, what testing found, and known limitations.
 
 ## Workflow for a work item
@@ -32,8 +32,9 @@ Spillway is a Kubernetes log platform: one `LogPipeline` spec per team becomes a
 | `make vector-check` | `vector validate` and `vector test` on every golden config |
 | `go test ./internal/render -update` | Regenerate renderer goldens: `internal/render/testdata/*.yaml`, their `.tests.yaml`, `vector/aggregator/vector.yaml` and `vector/tests/aggregator.yaml`. Review the diff |
 | `make spillwayctl` | CLI: `bin/spillwayctl validate --vector-bin bin/vector examples/` |
-| `make fixtures RATE=N` | Fictional-PII injector (opt-in) |
-| `make m2-gate`, `make baseline` | Recorded measurements; see `docs/results` |
+| `make fixtures RATE=N` | Fictional-PII injector (opt-in): N/s each into the Wikimedia topic, the GitHub topic and its pod's stdout |
+| `make m2-gate`, `make m3-gate`, `make baseline` | Recorded measurements; see `docs/results`. The gates run against a fresh `make up` (`m3-gate`: ~20 min with the default `WINDOW=15m`) |
+| `make volume WINDOW=15m` | Hot-storage bytes against bytes in, overall and per feeder team, next to the M1 baseline's 102.9% |
 | `make leak-check WINDOW=15m` | Search every hot-sink stream for fixture values; fails on a leak or if no fixtures arrived |
 | `make cost-report WINDOW=30m` | Volume and estimated cost per team, hot vs cold (the cost dashboard's numbers as Markdown) |
 | `make sampling-check WINDOW=10m REF=edits=wiki-all` | Each team's dedupe, sampling and budget drops; per-level kept share against an unsampled reference team |
