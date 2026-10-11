@@ -3,6 +3,7 @@ package render
 import (
 	"bytes"
 	"flag"
+	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
@@ -241,24 +242,37 @@ func TestClaimedDataLeavesThePlatformPath(t *testing.T) {
 	if want := `!includes(["payments", "payments-batch"], .kubernetes.pod_namespace)`; f["condition"] != want {
 		t.Errorf("unclaimed_pods condition = %q, want %q", f["condition"], want)
 	}
-	if _, ok := c["sources"]["wikimedia"]; !ok {
-		t.Error("platform feeder path missing although no team reads the feeder topic")
+	for _, id := range []string{"wikimedia", "github"} {
+		if _, ok := c["sources"][id]; !ok {
+			t.Errorf("platform feed %q missing although no team reads its topic", id)
+		}
 	}
 
-	// content reads the feeder topic: the platform feeder path goes away.
+	// content reads the Wikimedia topic: that feed leaves the platform path,
+	// and GitHub's stays on it.
 	c = cfg(examples["content"])
-	for _, id := range []string{"wikimedia"} {
+	if _, ok := c["sources"]["wikimedia"]; ok {
+		t.Error("platform source wikimedia still rendered with its topic claimed")
+	}
+	redactFeed, _ := c["transforms"]["redact_feed"].(map[string]any)
+	if _, ok := c["sources"]["github"]; !ok || fmt.Sprint(redactFeed["inputs"]) != "[github]" {
+		t.Errorf("with only Wikimedia claimed, want the github feed alone on the platform path; redact_feed = %v", redactFeed)
+	}
+
+	// content and oss read both feeder topics: the platform feeder path goes away.
+	c = cfg(examples["content"], examples["oss"])
+	for _, id := range []string{"wikimedia", "github"} {
 		if _, ok := c["sources"][id]; ok {
-			t.Errorf("platform source %q still rendered with the feeder topic claimed", id)
+			t.Errorf("platform source %q still rendered with its topic claimed", id)
 		}
 	}
 	for _, id := range []string{"redact_feed", "stamp", "latency_metrics"} {
 		if _, ok := c["transforms"][id]; ok {
-			t.Errorf("platform transform %q still rendered with the feeder topic claimed", id)
+			t.Errorf("platform transform %q still rendered with every feeder topic claimed", id)
 		}
 	}
 	if _, ok := c["sinks"]["loki"]; ok {
-		t.Error("platform loki sink still rendered with the feeder topic claimed")
+		t.Error("platform loki sink still rendered with every feeder topic claimed")
 	}
 	if _, ok := c["transforms"]["unclaimed_pods"]; ok {
 		t.Error("unclaimed_pods rendered although no namespace is claimed")

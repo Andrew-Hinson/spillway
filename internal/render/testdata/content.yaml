@@ -48,6 +48,25 @@ sinks:
       team: '{{ spillway.team }}'
     out_of_order_action: accept
     type: loki
+  loki:
+    acknowledgements:
+      enabled: true
+    batch:
+      timeout_secs: 1
+    buffer:
+      max_size: 1073741824
+      type: disk
+      when_full: block
+    encoding:
+      codec: json
+    endpoint: http://loki.observability.svc:3100
+    inputs:
+    - stamp
+    labels:
+      feeder: '{{ spillway.feeder }}'
+      type: '{{ type }}'
+    out_of_order_action: accept
+    type: loki
   loki_pods:
     acknowledgements:
       enabled: true
@@ -93,6 +112,7 @@ sinks:
     - 60000
     inputs:
     - metrics_by_team
+    - latency_metrics
     - team_latency_metrics
     type: prometheus_exporter
 sources:
@@ -127,6 +147,22 @@ sources:
     topic_key: ""
     topics:
     - wikimedia.recentchange
+    type: kafka
+  github:
+    auto_offset_reset: earliest
+    bootstrap_servers: spillway-kafka-bootstrap.kafka.svc:9092
+    decoding:
+      codec: json
+    group_id: spillway-platform-github
+    headers_key: ""
+    key_field: ""
+    metrics:
+      topic_lag_metric: true
+    offset_key: ""
+    partition_key: ""
+    topic_key: ""
+    topics:
+    - github.events
     type: kafka
   internal_metrics:
     scrape_interval_secs: 15
@@ -190,6 +226,17 @@ transforms:
       . = redact(., filters: [r'[\p{L}\p{N}._%+-]+(?:@|%40)[\p{L}\p{N}.-]+\.\p{L}{2,}', r'MBR-\d{8}', r'(?:\+1[ .-]?)?(?:\(\d{3}\) ?|\d{3}[ .-])\d{3}[ .-]\d{4}', r'\d{3}-\d{2}-\d{4}'])
       if meta != null { .spillway = meta }
     type: remap
+  latency_metrics:
+    inputs:
+    - stamp
+    metrics:
+    - field: spillway.pipeline_latency_ms
+      name: pipeline_latency_milliseconds
+      namespace: spillway
+      tags:
+        feeder: '{{ spillway.feeder }}'
+      type: histogram
+    type: log_to_metric
   metrics_by_team:
     inputs:
     - internal_metrics
@@ -275,6 +322,15 @@ transforms:
       })
       if length(stamp) > 0 { .spillway = stamp }
     type: remap
+  redact_feed:
+    inputs:
+    - github
+    source: |
+      # Redact every string in the event except Spillway's own metadata.
+      meta = .spillway
+      . = redact(., filters: [r'[\p{L}\p{N}._%+-]+(?:@|%40)[\p{L}\p{N}.-]+\.\p{L}{2,}', r'MBR-\d{8}', r'(?:\+1[ .-]?)?(?:\(\d{3}\) ?|\d{3}[ .-])\d{3}[ .-]\d{4}', r'\d{3}-\d{2}-\d{4}'])
+      if meta != null { .spillway = meta }
+    type: remap
   redact_pods:
     inputs:
     - pod_logs
@@ -283,6 +339,19 @@ transforms:
       meta = .spillway
       . = redact(., filters: [r'[\p{L}\p{N}._%+-]+(?:@|%40)[\p{L}\p{N}.-]+\.\p{L}{2,}', r'MBR-\d{8}', r'(?:\+1[ .-]?)?(?:\(\d{3}\) ?|\d{3}[ .-])\d{3}[ .-]\d{4}', r'\d{3}-\d{2}-\d{4}'])
       if meta != null { .spillway = meta }
+    type: remap
+  stamp:
+    inputs:
+    - redact_feed
+    source: |
+      del(.source_type)
+      sink_at = now()
+      .spillway.sink_at = sink_at
+      produced_at, err = parse_timestamp(.spillway.produced_at, "%+")
+      if err == null {
+        .spillway.pipeline_latency_ms = to_unix_timestamp(sink_at, unit: "milliseconds") -
+          to_unix_timestamp(produced_at, unit: "milliseconds")
+      }
     type: remap
   team_latency_events:
     condition: exists(.spillway.pipeline_latency_ms)

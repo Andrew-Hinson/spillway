@@ -54,6 +54,8 @@ HELM_INSTALL           = $(HELM) upgrade --install --wait --timeout 10m
 # rolls when the code changes.
 WIKIMEDIA_IMAGE := spillway/wikimedia-feeder
 WIKIMEDIA_TAG    = $(shell cat go.mod go.sum $$(find feeders/wikimedia -type f | sort) | sha256sum | cut -c1-12)
+GITHUB_IMAGE    := spillway/github-feeder
+GITHUB_TAG       = $(shell cat go.mod go.sum $$(find feeders/github -type f | sort) | sha256sum | cut -c1-12)
 OPERATOR_IMAGE  := spillway/operator
 OPERATOR_TAG     = $(shell (echo $(VECTOR_VERSION); cat go.mod go.sum $$(find api cmd/operator internal -type f | sort)) | sha256sum | cut -c1-12)
 # Must be one of the images built for KIND_VERSION, pinned by digest (see kind release notes).
@@ -162,7 +164,7 @@ grafana: $(HELM) $(KUBECTL) ## Install Grafana with Loki and Prometheus datasour
 		-f $(PLATFORM)/grafana/values.yaml
 
 .PHONY: feeders
-feeders: wikimedia-feeder ## Build and deploy the feeders
+feeders: wikimedia-feeder github-feeder ## Build and deploy the feeders
 
 .PHONY: wikimedia-feeder
 wikimedia-feeder: docker-check $(KIND) $(KUBECTL) ## Build, load and deploy the Wikimedia feeder
@@ -171,6 +173,14 @@ wikimedia-feeder: docker-check $(KIND) $(KUBECTL) ## Build, load and deploy the 
 	sed 's|$(WIKIMEDIA_IMAGE):dev|$(WIKIMEDIA_IMAGE):$(WIKIMEDIA_TAG)|' deploy/feeders/wikimedia.yaml | $(KUBECTL) apply -f -
 	$(KUBECTL) -n kafka wait kafkatopic/wikimedia.recentchange --for=condition=Ready --timeout=2m
 	$(KUBECTL) -n feeders rollout status deployment/wikimedia-feeder --timeout=3m
+
+.PHONY: github-feeder
+github-feeder: docker-check $(KIND) $(KUBECTL) ## Build, load and deploy the GitHub public events feeder
+	docker build -q -t $(GITHUB_IMAGE):$(GITHUB_TAG) -f feeders/github/Dockerfile .
+	$(KIND) load docker-image $(GITHUB_IMAGE):$(GITHUB_TAG) --name $(CLUSTER_NAME)
+	sed 's|$(GITHUB_IMAGE):dev|$(GITHUB_IMAGE):$(GITHUB_TAG)|' deploy/feeders/github.yaml | $(KUBECTL) apply -f -
+	$(KUBECTL) -n kafka wait kafkatopic/github.events --for=condition=Ready --timeout=2m
+	$(KUBECTL) -n feeders rollout status deployment/github-feeder --timeout=3m
 
 FIXTURES_IMAGE  := spillway/fixtures
 FIXTURES_TAG     = $(shell cat go.mod go.sum $$(find feeders/fixtures -type f | sort) | sha256sum | cut -c1-12)

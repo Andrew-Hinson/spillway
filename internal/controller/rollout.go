@@ -120,12 +120,33 @@ type baseline struct {
 	Bake   time.Duration `json:"bake"`
 	Canary PodHealth     `json:"canary"`
 	Stable PodHealth     `json:"stable"`
+	// CheckAt is when, into the bake, the checkpoint is taken: the longest
+	// sink batch timeout (plus a margin) before the end. A sink is judged
+	// stalled only on events it had received by then, so a batch that
+	// started late in the bake isn't mistaken for one that never sends.
+	CheckAt          time.Duration `json:"checkAt,omitempty"`
+	Checkpoint       *PodHealth    `json:"checkpoint,omitempty"`
+	StableCheckpoint *PodHealth    `json:"stableCheckpoint,omitempty"`
 }
+
+// checkpointMargin is the slack a sink gets beyond its batch timeout to
+// upload a batch, on top of the operator's own requeue delay.
+const checkpointMargin = 15 * time.Second
 
 // bakeFor returns how long to bake cfg: the configured bake, but at least
 // twice the longest sink batch timeout, so a sink that batches gets to send
 // at least once before a stall can be judged.
 func (r *AggregatorReconciler) bakeFor(cfg []byte) time.Duration {
+	return max(r.Canary.Bake, 2*longestBatch(cfg))
+}
+
+// checkAtFor returns when, into a bake of bake, to take the checkpoint for cfg.
+func checkAtFor(cfg []byte, bake time.Duration) time.Duration {
+	return max(0, bake-longestBatch(cfg)-checkpointMargin)
+}
+
+// longestBatch returns the longest sink batch timeout in cfg.
+func longestBatch(cfg []byte) time.Duration {
 	var c struct {
 		Sinks map[string]struct {
 			Batch struct {
@@ -138,7 +159,7 @@ func (r *AggregatorReconciler) bakeFor(cfg []byte) time.Duration {
 	for _, sink := range c.Sinks {
 		longest = max(longest, sink.Batch.TimeoutSecs)
 	}
-	return max(r.Canary.Bake, time.Duration(2*longest*float64(time.Second)))
+	return time.Duration(longest * float64(time.Second))
 }
 
 // diskBufferedSinks returns the sinks in cfg with a disk buffer.
@@ -177,7 +198,8 @@ func (r *AggregatorReconciler) rollout(ctx context.Context, sts *appsv1.Stateful
 
 	switch {
 	case canary != "" && canary == hash:
-		return r.evaluateCanary(ctx, sts, st, r.bakeFor(cfg))
+		bake := r.bakeFor(cfg)
+		return r.evaluateCanary(ctx, sts, st, bake, checkAtFor(cfg, bake))
 
 	case hash == stable && current != hash:
 		// Back to the known-good config (a spec reverted mid-canary): no canary needed.
@@ -236,7 +258,7 @@ func (r *AggregatorReconciler) rollout(ctx context.Context, sts *appsv1.Stateful
 
 // evaluateCanary waits for the canary pod, bakes it, and promotes or rolls
 // back.
-func (r *AggregatorReconciler) evaluateCanary(ctx context.Context, sts *appsv1.StatefulSet, st rolloutState, bake time.Duration) (rolloutState, ctrl.Result, error) {
+func (r *AggregatorReconciler) evaluateCanary(ctx context.Context, sts *appsv1.StatefulSet, st rolloutState, bake, checkAt time.Duration) (rolloutState, ctrl.Result, error) {
 	ann := sts.Annotations
 	hash := ann[annCanary]
 	replicas := replicasOf(sts)
@@ -273,7 +295,7 @@ func (r *AggregatorReconciler) evaluateCanary(ctx context.Context, sts *appsv1.S
 
 	var b baseline
 	if err := json.Unmarshal([]byte(ann[annCanaryBaseline]), &b); err != nil || b.At.IsZero() {
-		b = baseline{At: r.now().UTC(), Bake: bake, Canary: c, Stable: s}
+		b = baseline{At: r.now().UTC(), Bake: bake, CheckAt: checkAt, Canary: c, Stable: s}
 		raw, _ := json.Marshal(b)
 		v := string(raw)
 		patch := client.MergeFrom(sts.DeepCopy())
@@ -305,13 +327,34 @@ func (r *AggregatorReconciler) evaluateCanary(ctx context.Context, sts *appsv1.S
 		}
 		return r.rollback(ctx, sts, st, fmt.Sprintf("%s (allowed: %.0f more, for %.0f events)", reason, allowance, events))
 	}
+	if b.Checkpoint == nil && b.CheckAt > 0 && !r.now().Before(b.At.Add(b.CheckAt)) {
+		cp, scp := c, s
+		b.Checkpoint, b.StableCheckpoint = &cp, &scp
+		raw, _ := json.Marshal(b)
+		v := string(raw)
+		patch := client.MergeFrom(sts.DeepCopy())
+		setAnnotations(&sts.Annotations, map[string]*string{annCanaryBaseline: &v})
+		if err := r.Patch(ctx, sts, patch); err != nil {
+			return st, ctrl.Result{}, err
+		}
+	}
 	if left := b.At.Add(b.Bake).Sub(r.now()); left > 0 {
 		st.message = bakingMessage(hash, canaryPod, replicas, b)
-		return st, ctrl.Result{RequeueAfter: min(left+time.Second, 15*time.Second)}, nil
+		next := min(left+time.Second, 15*time.Second)
+		if untilCheck := b.At.Add(b.CheckAt).Sub(r.now()); b.Checkpoint == nil && untilCheck > 0 {
+			next = min(next, untilCheck) // on time, so the margin holds
+		}
+		return st, ctrl.Result{RequeueAfter: next}, nil
 	}
 	// Judged only at the end: a sink may batch for up to a minute before it
-	// sends, so a stall shows only over the whole bake.
-	if stalled := stalledSinks(b.Canary, c, b.Stable, s); len(stalled) > 0 {
+	// sends, so a stall shows only over the whole bake. Only events a sink
+	// had by the checkpoint count; without one (a clock jump, or a baseline
+	// from an older operator), everything it received does.
+	due, stableDue := c, s
+	if b.Checkpoint != nil {
+		due, stableDue = *b.Checkpoint, *b.StableCheckpoint
+	}
+	if stalled := stalledSinks(b.Canary, due, c, b.Stable, stableDue, s); len(stalled) > 0 {
 		return r.rollback(ctx, sts, st, fmt.Sprintf("canary pod %s took in events for %s but delivered none in %s",
 			canaryPod, strings.Join(stalled, ", "), r.now().Sub(b.At).Round(time.Second)))
 	}

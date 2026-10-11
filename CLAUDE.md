@@ -6,7 +6,7 @@ Spillway is a Kubernetes log platform: one `LogPipeline` spec per team becomes a
 
 - **Progress:** [`docs/plan.md`](docs/plan.md) has the milestones, the gate for each, and a checkbox per work item. Each item is a GitHub issue titled `[Mx.y] …` with its acceptance criteria. `gh issue list` shows what's open.
 - **Decisions:** [`docs/adr/`](docs/adr). 0001: validation with Vector bundled in the operator image. 0002: canary rollout via StatefulSet partition, quarantine and last-good specs. 0003: redaction on by default, with boundary-free patterns. 0004: pod logs parsed, with only the feeder stamp trusted from an app's `spillway`. 0005: budgets split evenly across the aggregators, over a 10 s window, with pod logs through Kafka so they spread evenly. 0006: Silo (a maintained MinIO fork) for local cold storage, since MinIO no longer publishes images.
-- **Measurements:** [`docs/results/`](docs/results): the M1 baseline, the M2 gate run, M3.2's redaction false positives and leak check, M3.3's sampling, dedupe and per-team drops, M3.4's budgets, M3.5's cold path, and M3.6's cost attribution.
+- **Measurements:** [`docs/results/`](docs/results): the M1 baseline, the M2 gate run, M3.2's redaction false positives and leak check, M3.3's sampling, dedupe and per-team drops, M3.4's budgets, M3.5's cold path, M3.6's cost attribution, and M3.7's GitHub feeder.
 - **Why something is the way it is:** the PR descriptions (`gh pr view N`) record the design, what testing found, and known limitations.
 
 ## Workflow for a work item
@@ -48,7 +48,7 @@ Spillway is a Kubernetes log platform: one `LogPipeline` spec per team becomes a
   - Components are named `<team>_<stage>`; sinks (`hot_loki`, `cold_s3`) are shared. `metrics_by_team` tags each team component's internal metrics with `team`, so drops and throughput sum per team.
   - Stages: `in` → `ids`/`dedupe` (on `spillway.event_id`; events without one bypass it) → `redact` → `cold` (a pass-through to `cold_s3`, so each team's cold volume is counted) and `sample` → `budget` → `hot`. Cost attribution (`dashboards/cost.json`, `bench/cost.py`) reads bytes at `<team>_ids`, `<team>_hot` and `<team>_cold`.
   - `budget` is a throttle per aggregator pod, with no shared state: each gets `floor(maxEventsPerSec / replicas)` over a 10 s window (`BudgetPerPod`). The operator renders with the StatefulSet's replica count; `render.DefaultOptions` (and so `spillwayctl` and the goldens) assumes 2.
-  - Data no team claims takes the platform paths (`wikimedia → redact_feed → stamp → loki`, `agents → pod_logs → redact_pods → loki_pods`), which mask every pattern. Claimed topics and namespaces leave them.
+  - Data no team claims takes the platform paths (`wikimedia, github → redact_feed → stamp → loki`, `agents → pod_logs → redact_pods → loki_pods`), which mask every pattern. `Options.Platform.Feeds` lists the feeder topics; a claimed topic drops just its feed, and the path goes when every feed is claimed. Claimed namespaces leave the pod path.
   - With no pipelines, it renders the platform config (`vector/aggregator/vector.yaml`): M1 plus redaction.
   - It also generates `vector test` cases for every transform it emits (`tests.go`), and a Go test enforces that every transform is covered.
 - **Operator** (`internal/controller`): renders → applies quarantine → `vector validate` (cached) → writes `vector-<hash>.yaml` to the ConfigMap → canaries via partition → promotes or rolls back.
@@ -58,6 +58,7 @@ Spillway is a Kubernetes log platform: one `LogPipeline` spec per team becomes a
 - **Field ownership:** the operator owns only fields Helm never sets: the config-suffix pod annotation, `updateStrategy.partition`, and its own annotations. Never `kubectl set`/`patch` a Helm-owned field, or the next `helm upgrade` fails with a server-side-apply conflict. If it happens, set the field back to Helm's value.
 - **Pod logs** travel agent → Kafka topic `spillway.pods` → the aggregators' shared `agents` source (consumer group `spillway-pods`, from the oldest offset). The agent produces with no key, so batches spread over the partitions. Parsing (`internal/render/podlogs.go`): a JSON line's fields become the event's fields; any other line stays in `message`. Every line gets a normalized `level` when one is recognizable (JSON, klog, a leading level word, logfmt). An app's `spillway` object is trusted only in the exact feeder-stamp shapes, because redaction skips `.spillway`; the rest lands in `app_spillway`, which is redacted. `TestPodLogSpillwayCantCarryPII` guards this.
 - **Redaction** (`internal/redact`): VRL `redact()` filters, on by default (a spec opts out with `redaction: {disabled: true}`). The patterns have no `\b`: escaped JSON in pod logs (`\n123-45-6789`) defeats word boundaries, and VRL's regex has no lookbehind. `testdata/corpus.yaml` holds the positive and negative cases. Run a candidate pattern against live data with `go run ./bench/redactfp -filter name=r'…'` before changing one.
+- **Canary stall check:** a sink is stalled only if it had received events by a checkpoint, the longest batch timeout plus 15 s before the end of the bake, and delivered none by the end. Bursty, low-rate sources (GitHub) can deliver their first events late in a bake (ADR 0002 amendment).
 - **Canary timing:** each config change takes ~2.5–4 min to reach both aggregators (2 min bake plus two restarts). Bake ≥ 2× the longest sink batch timeout. Error allowance is max(5, 0.1% of events).
 
 ## Testing expectations
@@ -78,13 +79,14 @@ Spillway is a Kubernetes log platform: one `LogPipeline` spec per team becomes a
 - **Vector at stdin EOF:** with a `stdin` source, closing stdin and letting vector exit can lose the last event on a loaded machine (CI, `-race`). Run vector from Go with `vectorrun.Stream`, which keeps stdin open until the expected output has arrived.
 - **Vector `dedupe`:** a missing match field counts as a value, so every event without it is a "duplicate" of the first. Route those around it.
 - **Vector timing:** its metrics endpoint comes up a few seconds after the pod is Ready. On shutdown it waits up to the 60 s grace period to drain sinks, which makes rolling back a stuck sink slow.
+- **GitHub feeder:** unauthenticated, 60 requests an hour, and the API caches for 5 minutes, so it polls every few minutes and gets up to 300 events each time. It paces each poll's events over the wait before the next. Without pacing, a team's budget throttle kept the start of each burst, and push, create and delete events (later in GitHub's order) never reached hot. Don't spend the rate limit on manual `curl`s while it runs; a token goes in the optional `github-feeder` Secret (key `token`).
 - **Kafka source counts:** a new team's Kafka source has its own consumer group, so its events flow from the canary pod before promotion.
 - **Generated files:** a new example in `examples/` changes the goldens and the pinned counts in `cmd/spillwayctl/main_test.go`.
 
 ## Open threads
 
 - **#43:** a rolled-back canary leaves new sinks' disk buffers orphaned. It's visible (metric, warning, status) but not drained.
-- **False positives on other data:** measured only on Wikimedia (0.015% of events). Re-measure on GitHub events in M3.7.
+- **False positives on other data:** measured on Wikimedia (0.015% of events). GitHub events carry real PII, so their rate can't be measured the same way. Spot checks found package specifiers (`pixi.js@8.22.0`) left unmasked, correctly, and 0 email addresses left in cold storage.
 - **Dedupe is per pod and in memory:** it catches feeder replays (same `event_id` and Kafka key, so same partition and aggregator), but not duplicates from a Kafka rebalance or an aggregator restart, which land on a pod with an empty cache. M4's chaos runs still dedupe by event ID when they count.
 - **Budgets assume an even spread:** each aggregator enforces an equal share, so a team only gets its whole budget if its events spread evenly. Kafka partitions do that (`spillway.pods` has 6, to divide evenly among 1, 2, 3 or 6 aggregators). A 3-partition topic on 2 aggregators splits 2:1.
 - **Level from free text:** a text line whose logfmt part says `level=debug` is sampled as debug even if the app meant something else; JSON and klog lines are unambiguous.

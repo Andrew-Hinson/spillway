@@ -512,6 +512,41 @@ func TestCanaryWithAStalledSinkIsRolledBack(t *testing.T) {
 	e.expectReady("search", metav1.ConditionFalse, spillwayv1alpha1.ReasonCanaryFailed, "took in events for hot_loki but delivered none")
 }
 
+// A low-rate source's first events can reach the canary late in the bake,
+// and a batching sink won't have sent them yet: that's not a stall. Events
+// it had by the checkpoint (one batch timeout before the end) are judged.
+func TestLateFirstEventsAreNotAStall(t *testing.T) {
+	for _, c := range []struct {
+		name          string
+		beforeCheck   float64 // events received by the checkpoint
+		afterCheck    float64 // and by the end
+		wantPromotion bool
+	}{
+		{"events only after the checkpoint", 0, 300, true},
+		{"events before the checkpoint, never sent", 300, 300, false},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			e := newEnv(t, true, true)
+			e.pipeline("search", "search", "search", false)
+			e.reconcile()
+			e.settle()
+			e.reconcile() // baseline: nothing received
+			// Loki batches for 1 s: the checkpoint is 2m - 1s - 15s in.
+			e.advance(canary.Bake - time.Second - checkpointMargin)
+			e.health.pods["vector-aggregator-1"] = PodHealth{Sinks: map[string]SinkCounts{"hot_loki": {Received: c.beforeCheck}}}
+			e.reconcile() // checkpoint
+			e.health.pods["vector-aggregator-1"] = PodHealth{Sinks: map[string]SinkCounts{"hot_loki": {Received: c.afterCheck}}}
+			e.advance(time.Second + checkpointMargin + time.Second)
+			e.reconcile() // judged
+			if c.wantPromotion {
+				e.expectReady("search", metav1.ConditionFalse, spillwayv1alpha1.ReasonRollingOut, "passed its canary")
+			} else {
+				e.expectReady("search", metav1.ConditionFalse, spillwayv1alpha1.ReasonCanaryFailed, "took in events for hot_loki but delivered none")
+			}
+		})
+	}
+}
+
 func TestNewSpecMidCanaryReplacesTheCanary(t *testing.T) {
 	e := newEnv(t, true, true)
 	e.pipeline("search", "search", "search", false)

@@ -1,0 +1,29 @@
+package main
+
+import (
+	"encoding/json"
+	"testing"
+	"time"
+)
+
+func TestStamp(t *testing.T) {
+	at := time.Date(2026, 9, 30, 12, 0, 0, 123456789, time.UTC)
+	s := Stamp{EventID: "id-1", ProducedAt: at, Feeder: "github"}
+
+	for _, in := range []string{`{"title":"X","n":1}`, "{\n  \"title\": \"X\",\n  \"n\": 1\n}\n", `{}`, ` { } `} {
+		out, err := stamp([]byte(in), s)
+		if err != nil {
+			t.Fatalf("stamp(%q): %v", in, err)
+		}
+		var got struct {
+			Title    string `json:"title"`
+			Spillway Stamp  `json:"spillway"`
+		}
+		if err := json.Unmarshal(out, &got); err != nil {
+			t.Fatalf("stamp(%q) produced invalid JSON %q: %v", in, out, err)
+		}
+		if got.Spillway.EventID != "id-1" || !got.Spillway.ProducedAt.Equal(at) || got.Spillway.Feeder != "github" {
+			t.Errorf("stamp(%q) = %s", in, out)
+		}
+	}
+}
