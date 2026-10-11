@@ -133,7 +133,8 @@ def measure(p, start, end):
         'sum by (app) (label_replace(rate(container_cpu_usage_seconds_total{container!="",container!="POD"}'
         f'[{w}]), "app", "$1", "pod", "({"|".join(APPS)})-.*"))', end, "app")
     m["mem"] = p.by(
-        'sum by (pod) (container_memory_working_set_bytes{container!="",container!="POD",namespace="vector",pod=~"vector-aggregator-.*"})',
+        # max, not sum: a restarted container's old series lingers next to the new one.
+        'max by (pod) (container_memory_working_set_bytes{container!="",container!="POD",namespace="vector",pod=~"vector-aggregator-.*"})',
         end, "pod")
     return m
 
@@ -272,6 +273,12 @@ def main():
     drain_end = parse_time(args.drain_end) if args.drain_end else drained or dt.datetime.now(dt.timezone.utc)
     total = exact_totals(p, run_start - dt.timedelta(seconds=30), drain_end)
     in_loki = loki_lines(args.loki, run_start - dt.timedelta(seconds=30), drain_end)
+    # Each step's events carry Kafka timestamps from inside the step, so
+    # Loki's lines per step window can be matched to what the step sent.
+    per_step = []
+    for i, s in enumerate(steps):
+        until = steps[i + 1]["start"] if i + 1 < len(steps) else s["end"] + dt.timedelta(seconds=1)
+        per_step.append(loki_lines(args.loki, s["start"], until))
 
     print(f"## Run: {run_start:%Y-%m-%d %H:%M}–{run_end:%H:%M} UTC\n")
     print(f"Reported {dt.datetime.now(dt.timezone.utc):%Y-%m-%d %H:%M} UTC on {platform.node()} "
@@ -322,12 +329,21 @@ def main():
     print(f"| {acked:,} | {failed:,} | {total['consumed']:,.0f} | {total['hot_loki']:,.0f} | {in_loki:,} | {total['cold_s3']:,.0f} | "
           f"{total['discarded']:,.0f} | {total['errors']:,.0f} | "
           f"{total['rejected_hot_loki']:,.0f} / {total['rejected_cold_s3']:,.0f} |")
-    print("\nVector's counts are exact: every raw sample of each counter from 30 s before the first step to the end "
-          "of the drain, with restarts handled. *Lines in Loki* counts `{team=\"bench\"}` over the same range. "
+    print("\nVector's counts come from every raw sample of each counter from 30 s before the first step to the end "
+          "of the drain, with restarts handled; they're exact unless a pod was killed, whose last increments are never "
+          "scraped. *Lines in Loki* counts `{team=\"bench\"}` over the same range. "
           "The live feeds don't reach these components, so every event counted is the generator's. ", end="")
     print("**Every acknowledged event reached Loki.**" if in_loki == acked else
           f"**Loki holds {in_loki - acked:+,} lines against what Kafka acknowledged.**")
     print()
+
+    print("\n### Every event, per step (Loki lines by event time against what Kafka acknowledged)\n")
+    print("| Target | Acked by Kafka | Lines in Loki | Difference |\n|---|---|---|---|")
+    for s, n in zip(steps, per_step):
+        diff = n - (s["acked"] or 0)
+        print(f"| {s['rate']:,}/s | {s['acked'] or 0:,} | {n:,} | {'0' if diff == 0 else f'{diff:+,}'} |")
+    print("\nA positive difference is duplicates (an aggregator restarted and re-read events since its last offset "
+          "commit); a negative one, events missing from Loki.\n")
 
     if sustained:
         s, m = sustained
