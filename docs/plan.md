@@ -89,7 +89,7 @@ Each line is one GitHub issue: the title, then the acceptance criteria after the
 3. [x] Sampling and dedup — per-level sample rates from the spec; dropped counts visible per team
 4. [x] Per-team budgets — throttle transform from `maxEventsPerSec`; over-budget events counted, not silently lost
 5. [x] Cold path to object storage — MinIO locally (Silo, a maintained MinIO fork: MinIO no longer publishes images, ADR 0006), S3 in cloud; partitioned by team and date, compressed
-6. [ ] Cost attribution dashboard — volume and estimated cost per team, hot vs cold
+6. [x] Cost attribution dashboard — volume and estimated cost per team, hot vs cold
 7. [ ] Second feeder: GitHub public events — different shape and rate than Wikimedia, both flowing at once
 
 ### M4 — Proof and polish

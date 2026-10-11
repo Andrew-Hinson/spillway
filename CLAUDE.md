@@ -6,7 +6,7 @@ Spillway is a Kubernetes log platform: one `LogPipeline` spec per team becomes a
 
 - **Progress:** [`docs/plan.md`](docs/plan.md) has the milestones, the gate for each, and a checkbox per work item. Each item is a GitHub issue titled `[Mx.y] …` with its acceptance criteria. `gh issue list` shows what's open.
 - **Decisions:** [`docs/adr/`](docs/adr). 0001: validation with Vector bundled in the operator image. 0002: canary rollout via StatefulSet partition, quarantine and last-good specs. 0003: redaction on by default, with boundary-free patterns. 0004: pod logs parsed, with only the feeder stamp trusted from an app's `spillway`. 0005: budgets split evenly across the aggregators, over a 10 s window, with pod logs through Kafka so they spread evenly. 0006: Silo (a maintained MinIO fork) for local cold storage, since MinIO no longer publishes images.
-- **Measurements:** [`docs/results/`](docs/results): the M1 baseline, the M2 gate run, M3.2's redaction false positives and leak check, M3.3's sampling, dedupe and per-team drops, M3.4's budgets, and M3.5's cold path.
+- **Measurements:** [`docs/results/`](docs/results): the M1 baseline, the M2 gate run, M3.2's redaction false positives and leak check, M3.3's sampling, dedupe and per-team drops, M3.4's budgets, M3.5's cold path, and M3.6's cost attribution.
 - **Why something is the way it is:** the PR descriptions (`gh pr view N`) record the design, what testing found, and known limitations.
 
 ## Workflow for a work item
@@ -35,6 +35,7 @@ Spillway is a Kubernetes log platform: one `LogPipeline` spec per team becomes a
 | `make fixtures RATE=N` | Fictional-PII injector (opt-in) |
 | `make m2-gate`, `make baseline` | Recorded measurements; see `docs/results` |
 | `make leak-check WINDOW=15m` | Search every hot-sink stream for fixture values; fails on a leak or if no fixtures arrived |
+| `make cost-report WINDOW=30m` | Volume and estimated cost per team, hot vs cold (the cost dashboard's numbers as Markdown) |
 | `make sampling-check WINDOW=10m REF=edits=wiki-all` | Each team's dedupe, sampling and budget drops; per-level kept share against an unsampled reference team |
 | `make cold-check` | Sync the cold bucket and check every object: `team=…/date=…/` keys matching their events, gzip, no fixture values |
 | `make storage` | Local S3 (Silo, a MinIO fork, in `storage`), the `spillway-cold` bucket, and generated credentials in the `cold-storage` Secret (also copied to `vector`) |
@@ -45,7 +46,7 @@ Spillway is a Kubernetes log platform: one `LogPipeline` spec per team becomes a
 
 - **Renderer** (`internal/render`): all LogPipelines → one aggregator config, deterministically.
   - Components are named `<team>_<stage>`; sinks (`hot_loki`, `cold_s3`) are shared. `metrics_by_team` tags each team component's internal metrics with `team`, so drops and throughput sum per team.
-  - Stages: `in` → `ids`/`dedupe` (on `spillway.event_id`; events without one bypass it) → `redact` → cold split → `sample` → `budget` → `hot`.
+  - Stages: `in` → `ids`/`dedupe` (on `spillway.event_id`; events without one bypass it) → `redact` → `cold` (a pass-through to `cold_s3`, so each team's cold volume is counted) and `sample` → `budget` → `hot`. Cost attribution (`dashboards/cost.json`, `bench/cost.py`) reads bytes at `<team>_ids`, `<team>_hot` and `<team>_cold`.
   - `budget` is a throttle per aggregator pod, with no shared state: each gets `floor(maxEventsPerSec / replicas)` over a 10 s window (`BudgetPerPod`). The operator renders with the StatefulSet's replica count; `render.DefaultOptions` (and so `spillwayctl` and the goldens) assumes 2.
   - Data no team claims takes the platform paths (`wikimedia → redact_feed → stamp → loki`, `agents → pod_logs → redact_pods → loki_pods`), which mask every pattern. Claimed topics and namespaces leave them.
   - With no pipelines, it renders the platform config (`vector/aggregator/vector.yaml`): M1 plus redaction.

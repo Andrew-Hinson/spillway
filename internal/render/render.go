@@ -8,7 +8,7 @@
 //	<team>_ids          route events with a spillway.event_id to dedupe
 //	<team>_dedupe       drop recently seen event IDs (feeder replays)
 //	<team>_redact       mask PII             (unless redaction.disabled is set)
-//	    ├─► cold_s3     the complete redacted stream   (if routing.cold)
+//	    ├─► <team>_cold ─► cold_s3   the complete redacted stream (if routing.cold)
 //	    └─► <team>_sample   keep a share per level     (if sampling is set)
 //	        <team>_budget   cap the event rate, split  (if budget is set)
 //	                        across the aggregators
@@ -179,7 +179,7 @@ func RenderWithTests(pipelines []spillwayv1alpha1.LogPipeline, opts Options) (cf
 // components, capturing the team. Platform and shared components (stamp,
 // redact_feed, hot_loki, team_latency_events…) never end in one of these
 // stages.
-const teamStages = `^(?P<team>[a-z0-9-]+)_(?:src_.+|in_.+|ids|dedupe|redact|sample|budget|hot)$`
+const teamStages = `^(?P<team>[a-z0-9-]+)_(?:src_.+|in_.+|ids|dedupe|redact|cold|sample|budget|hot)$`
 
 // addTeamMetrics tags Vector's own metrics for each team's components with
 // the team, so drops (sampling, budget, dedupe), throughput and errors can be
@@ -287,7 +287,12 @@ func (c *config) addPipeline(p spillwayv1alpha1.LogPipeline, opts Options) (hotO
 		c.testRedact(id("redact"), patterns)
 	}
 	if cold(p) {
-		coldOut = head
+		// A pass-through, so the team's cold volume has a component of its own
+		// to count: cold_s3 is shared, like hot_loki (whose per-team
+		// counterpart is <team>_hot).
+		c.transforms[id("cold")] = remap(head, "# Pass through: counts this team's volume to cold storage.\ntrue\n")
+		c.testPassThrough(id("cold"))
+		coldOut = []string{id("cold")}
 	}
 	if !hot(p) {
 		return nil, coldOut, nil

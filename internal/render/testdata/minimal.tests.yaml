@@ -254,6 +254,25 @@ tests:
       kind: absolute
       name: component_discarded_events_total
       tags:
+        component_id: search_cold
+        intentional: "true"
+    type: metric
+  name: metrics_by_team tags search_cold's metrics with its team
+  outputs:
+  - conditions:
+    - source: |
+        assert_eq!(.tags.team, "search")
+        assert_eq!(.tags.component_id, "search_cold")
+      type: vrl
+    extract_from: metrics_by_team
+- inputs:
+  - insert_at: metrics_by_team
+    metric:
+      counter:
+        value: 1
+      kind: absolute
+      name: component_discarded_events_total
+      tags:
         component_id: hot_loki
         intentional: "true"
     type: metric

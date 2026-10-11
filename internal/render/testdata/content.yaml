@@ -25,7 +25,7 @@ sinks:
     framing:
       method: newline_delimited
     inputs:
-    - content_redact
+    - content_cold
     key_prefix: team={{ spillway.team }}/date=%Y-%m-%d/
     region: us-east-1
     type: aws_s3
@@ -138,6 +138,13 @@ transforms:
     threshold: 500
     type: throttle
     window_secs: 10
+  content_cold:
+    inputs:
+    - content_redact
+    source: |
+      # Pass through: counts this team's volume to cold storage.
+      true
+    type: remap
   content_dedupe:
     cache:
       num_events: 10000
@@ -187,7 +194,7 @@ transforms:
     inputs:
     - internal_metrics
     source: |
-      found = parse_regex(string(.tags.component_id) ?? "", r'^(?P<team>[a-z0-9-]+)_(?:src_.+|in_.+|ids|dedupe|redact|sample|budget|hot)$') ?? {}
+      found = parse_regex(string(.tags.component_id) ?? "", r'^(?P<team>[a-z0-9-]+)_(?:src_.+|in_.+|ids|dedupe|redact|cold|sample|budget|hot)$') ?? {}
       if includes(["content"], found.team) { .tags.team = found.team }
     type: remap
   pod_logs:
