@@ -31,8 +31,14 @@ scrapeConfigs:
     enabled: false
   kubernetes-nodes:
     enabled: false
+  # Per-container CPU and memory, for the benchmark (bench/throughput.py):
+  # which component saturates first. Every other cAdvisor series is dropped.
   kubernetes-nodes-cadvisor:
-    enabled: false
+    enabled: true
+    metric_relabel_configs:
+      - source_labels: [__name__]
+        action: keep
+        regex: container_cpu_usage_seconds_total|container_memory_working_set_bytes
   kubernetes-service-endpoints:
     enabled: false
   kubernetes-service-endpoints-slow:

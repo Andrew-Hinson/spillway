@@ -1,0 +1,17 @@
+# The benchmark's team: the load generator's topic through every stage that
+# doesn't drop on purpose. Dedupe (the events have unique IDs) and redaction
+# (on by default) run, and the stream goes to both hot and cold, with no
+# sampling or budget. So any drop at load is a real one.
+apiVersion: spillway.dev/v1alpha1
+kind: LogPipeline
+metadata:
+  name: bench
+spec:
+  team: bench
+  sources:
+    - name: load
+      kafka:
+        topic: bench.load
+  routing:
+    hot: true
+    cold: true

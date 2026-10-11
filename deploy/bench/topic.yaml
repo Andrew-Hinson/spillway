@@ -1,0 +1,18 @@
+# Benchmark topic for the load generator (feeders/loadgen). Six partitions, so
+# the two aggregators get three each (docs/adr/0005). Retention is capped by
+# size, so a run at tens of MB/s can't fill the broker's 10Gi volume; short
+# segments let it delete old data during the run.
+apiVersion: kafka.strimzi.io/v1
+kind: KafkaTopic
+metadata:
+  name: bench.load
+  namespace: kafka
+  labels:
+    strimzi.io/cluster: spillway
+spec:
+  partitions: 6
+  replicas: 1
+  config:
+    retention.ms: 3600000          # 1 hour
+    retention.bytes: 2147483648    # 2 GiB per partition, 12 GiB in all
+    segment.bytes: 67108864        # 64 MiB

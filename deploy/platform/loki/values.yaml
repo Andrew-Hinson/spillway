@@ -19,6 +19,21 @@ loki:
           period: 24h
   limits_config:
     retention_period: 168h
+    # Loki's defaults (4 MB/s per tenant, 3 MB/s per stream) cap a team's hot
+    # path at about 2,700 events/s: hot_loki makes one stream per team and
+    # source. Spillway's per-team budgets are the rate control, so this
+    # single-tenant Loki takes what the aggregators send
+    # (docs/results/m4.1-benchmark.md).
+    ingestion_rate_mb: 64
+    ingestion_burst_size_mb: 128
+    per_stream_rate_limit: 64MB
+    per_stream_rate_limit_burst: 128MB
+  ingester:
+    wal:
+      # Flush while replaying the WAL once it holds this much, so a restart
+      # after an OOM can't OOM again replaying (the default is 4GB, above
+      # the container's limit; it crash-looped in the M4.1 benchmark).
+      replay_memory_ceiling: 2GB
   compactor:
     retention_enabled: true
     delete_request_store: filesystem
@@ -28,12 +43,14 @@ singleBinary:
   persistence:
     enabled: true
     size: 10Gi
+  # 1Gi held to 16k events/s in the M4.1 benchmark (peak 930 MiB) and was
+  # OOM-killed at 24k.
   resources:
     requests:
       cpu: 100m
-      memory: 256Mi
+      memory: 512Mi
     limits:
-      memory: 1Gi
+      memory: 4Gi
 
 # Components of the scalable modes; unused in Monolithic mode.
 write:

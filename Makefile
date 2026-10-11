@@ -305,6 +305,10 @@ m2-gate: $(KUBECTL) spillwayctl ## Run the M2 gate demo against a fresh `make up
 m3-gate: $(KUBECTL) ## Run the M3 gate demo against a fresh `make up` (WINDOW, default 15m; see docs/results/m3-gate.md)
 	bench/m3_gate.sh
 
+.PHONY: bench
+bench: $(KUBECTL) $(KIND) docker-check ## Stepped-load benchmark against a fresh `make up` (STEPS, STEP, WARMUP; see docs/results/m4.1-benchmark.md)
+	bench/m4_bench.sh
+
 .PHONY: test
 test: $(SETUP_ENVTEST) $(VECTOR) ## Run Go unit tests, including CRD validation against a local API server
 	KUBEBUILDER_ASSETS="$$($(SETUP_ENVTEST) use $(ENVTEST_K8S_VERSION) --bin-dir $(BIN)/envtest -p path)" \
