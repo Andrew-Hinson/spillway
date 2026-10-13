@@ -581,6 +581,32 @@ func TestRevertMidCanaryReturnsToStableWithoutACanary(t *testing.T) {
 	}
 }
 
+// Deleting a team and applying the same spec again during the removal's
+// canary renders the stable config again, from a new object (#56).
+func TestPipelineRecreatedMidCanaryIsRolledOut(t *testing.T) {
+	e := newEnv(t, true, true)
+	e.pipeline("search", "search", "search", false)
+	e.promote()
+	stable := e.running()
+
+	e.deletePipeline("search")
+	e.reconcile()
+	if e.sts().Annotations[annCanary] == "" {
+		t.Fatal("removing the pipeline started no canary")
+	}
+	e.settle()
+	e.reconcile() // the removal's canary is baking
+
+	e.pipeline("search", "search", "search", false) // same spec, new UID
+	e.reconcile()
+	if e.running() != stable || e.sts().Annotations[annCanary] != "" {
+		t.Fatalf("not back to stable: running=%q canary=%q", e.running(), e.sts().Annotations[annCanary])
+	}
+	e.settle()
+	e.reconcile()
+	e.expectReady("search", metav1.ConditionTrue, spillwayv1alpha1.ReasonRolledOut, "running config")
+}
+
 func TestConfigMapKeepsOnlyLiveRevisions(t *testing.T) {
 	e := newEnv(t, true, true)
 	e.pipeline("search", "search", "search", false)

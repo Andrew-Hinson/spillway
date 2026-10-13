@@ -12,6 +12,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"sort"
 	"strings"
 	"time"
@@ -232,7 +233,10 @@ func (r *AggregatorReconciler) rollout(ctx context.Context, sts *appsv1.Stateful
 		if err := r.recordLastGoodSpecs(ctx, pipelines); err != nil {
 			return st, ctrl.Result{}, err
 		}
-		if stable != hash {
+		// The pipelines are recorded even when the config isn't new: the same
+		// config can come from different objects (a team deleted, then applied
+		// again during the removal's canary), and Ready goes by object (#56).
+		if stable != hash || !maps.Equal(st.stable, fp) {
 			b, _ := json.Marshal(fp)
 			fps := string(b)
 			// Retried changes that are now stable have passed: release them.
