@@ -1,6 +1,14 @@
 # Spillway
 
-A Kubernetes log platform. Each team writes one short `LogPipeline` spec, and Spillway turns it into a tested, canaried [Vector](https://vector.dev) pipeline with collection, PII redaction, sampling, per-team budgets, and hot (Loki) and cold (S3) routing. It runs on live public data (Wikimedia edits, GitHub events), and every number below is a measurement in [`docs/results`](docs/results).
+## The problem
+
+In a company, every team's apps produce logs, and those logs are expensive to store and risky to keep, because they can contain personal data like emails or ID numbers.
+
+## What Spillway does
+
+Each team writes a short config file saying where its logs come from and how to handle them: hide personal data, keep only a share of the low-value lines, cap the volume, and choose between expensive, fast-to-search storage and cheap archive storage. Spillway turns that file into a running log pipeline on Kubernetes (built with [Vector](https://vector.dev)), tries it out on one server first, and rolls it back automatically if anything breaks.
+
+It runs on live public data (Wikimedia edits and GitHub activity), and every number below is a measurement in [`docs/results`](docs/results).
 
 ## Results
 
