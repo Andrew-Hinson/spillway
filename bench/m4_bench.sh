@@ -40,8 +40,8 @@ log "building spillway/loadgen:$tag"
 docker build -q -t "spillway/loadgen:$tag" -f feeders/loadgen/Dockerfile . >/dev/null
 bin/kind load docker-image "spillway/loadgen:$tag" --name spillway >/dev/null
 
-# A LogPipeline applied mid-canary can stay RollingOut (#56), and the
-# last run's cleanup starts one: wait until the operator is idle.
+# The last run's cleanup starts a rollout: let it finish, so the run starts
+# from a settled aggregator.
 idle() {
   [[ -z $($k -n vector get sts vector-aggregator -o jsonpath='{.metadata.annotations.spillway\.dev/canary-config}') ]] &&
     [[ $($k -n vector get sts vector-aggregator -o jsonpath='{.status.updateRevision}') == \

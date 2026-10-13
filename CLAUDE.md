@@ -90,7 +90,6 @@ Spillway is a Kubernetes log platform: one `LogPipeline` spec per team becomes a
 
 ## Open threads
 
-- **#56:** a LogPipeline re-created during a canary (delete, then apply the same spec within the bake) stays `RollingOut` although its config runs: `stable-pipelines` keeps the old UID. `bench/m4_bench.sh` waits for the operator to be idle.
 - **Aggregator memory under overload:** at 48,000 events/s both aggregators were OOM-killed (1 GiB): the Kafka sources fetch faster than the transforms drain, in memory. They recover, but redeliver up to 5 s each (143,199 duplicates in Loki).
 - **Latency knee at 3–4,000 events/s:** p99 goes from 29 ms to ~0.5–1 s while throughput keeps up to 32,000/s. Queues build through the team's transforms; disk buffers, the metrics exporter and CPU are ruled out (docs/results/m4.1-benchmark.md). Root cause open.
 - **#43:** a rolled-back canary leaves new sinks' disk buffers orphaned. It's visible (metric, warning, status) but not drained.
