@@ -15,7 +15,7 @@ Spillway is a Kubernetes log platform: one `LogPipeline` spec per team becomes a
 2. **Read the issue** (`gh issue view N`) and the plan's gate for the milestone, then build to the acceptance criteria.
 3. **Check locally:** `make lint`, `make test`, `make generate` (must leave no diff; CI checks), and `make vector-check`.
 4. **Test end to end in kind** for anything that touches the running system: `make up` from scratch, then apply real specs and query Loki and Prometheus. Unit tests alone have repeatedly missed real bugs here: VRL type errors, Vector's retry behaviour, the SSN matcher.
-5. **Update docs:** tick the plan's checkbox, update the README status and layout if they changed, and add or update an ADR for a significant design decision.
+5. **Update docs:** tick the plan's checkbox, update the README's results table if a headline number changed (keep the README short: details belong in `docs/results`, the ADRs and this file), and add or update an ADR for a significant design decision.
 6. **PR:** the title ends in `(Mx.y)`, and the body starts with `Closes #N`. Then a criteria → "how it's met" table, the design, notes and limitations, and a test plan with honest results (say what failed and what was fixed). CI must pass before merging.
 7. **Merge** with `gh pr merge N --merge --delete-branch`. Then `git checkout main && git pull`, and confirm CI passes on `main`.
 8. **`make down`** when finished testing.

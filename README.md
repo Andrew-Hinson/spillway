@@ -1,54 +1,46 @@
 # Spillway
 
-Spillway is a Kubernetes log platform that will turn a short YAML spec per team into a running, tested [Vector](https://vector.dev) pipeline, with collection, PII redaction, sampling, per-team budgets, and hot and cold routing. It runs on real public event streams, and every number in this README comes from a measurement in [`docs/results`](docs/results).
+A Kubernetes log platform. Each team writes one short `LogPipeline` spec, and Spillway turns it into a tested, canaried [Vector](https://vector.dev) pipeline with collection, PII redaction, sampling, per-team budgets, and hot (Loki) and cold (S3) routing. It runs on live public data (Wikimedia edits, GitHub events), and every number below is a measurement in [`docs/results`](docs/results).
 
-## Status
+## Results
 
-**M1 (real traffic, end to end) is built.** Live Wikimedia edits and the cluster's own pod logs flow through Kafka and Vector into Loki and can be queried in Grafana, and a baseline has been recorded.
+| | |
+|---|---|
+| Onboarding a team | First event queryable **5 s** after `kubectl apply`; on every aggregator in ~2 min ([M2 gate](docs/results/m2-gate.md)) |
+| Bad configs | **3 of 3 blocked**: by the schema, a conflict check, and a canary rollback ([M2 gate](docs/results/m2-gate.md)) |
+| PII redaction | **0 of 9,000** injected fixtures leaked; patterns touch 0.015% of live events ([M3 gate](docs/results/m3-gate.md), [redaction](docs/results/m3.2-redaction.md)) |
+| Hot-storage volume | **38% less** for the same input, from sampling, dedupe and routing ([M3 gate](docs/results/m3-gate.md)) |
+| Throughput | **32,000 events/s** sustained on two aggregators in kind; p99 latency 29 ms up to 3,000 events/s ([benchmark](docs/results/m4.1-benchmark.md)) |
+| Failures | **0 events lost** through an aggregator kill, Loki and S3 outages, and an agent kill, counted by event ID. A full disk lost 47 ([chaos](docs/results/m4.2-chaos.md)) |
 
-**M2 (the operator) is complete.** Applying a `LogPipeline` changes what runs:
-- **Checked:** the operator renders every pipeline into the aggregator's config and checks it with `vector validate`.
-- **Canaried:** new config goes to one aggregator first, and is promoted only if its error rate and delivery hold.
-- **Reported:** each pipeline is marked Ready, or Invalid or CanaryFailed with the reason.
-
-The [M2 gate run](docs/results/m2-gate.md) shows a team's first event queryable 5 s after `kubectl apply`, and three of three bad configs blocked: one at apply time, one Invalid, and one rolled back by the canary. Config changes go out as canaries ([ADR 0002](docs/adr/0002-canary-rollout-with-statefulset-partition.md)), and `spillwayctl` runs the same checks without a cluster. **M3 (policy features) is complete:** the [M3 gate run](docs/results/m3-gate.md) put two teams on two feeders, each with redaction, sampling, a budget, and hot and cold routing. 0 of 9,000 injected fixtures leaked, and hot volume was 63.5% of volume in, against 102.9% in the M1 baseline. Redaction is on by default, for teams and for unclaimed data ([ADR 0003](docs/adr/0003-redaction-on-by-default.md)). A fixture injector mixes known, fictional PII into the live streams, and `make leak-check` searches the hot sink for it: [0 of 5,054 fixtures leaked](docs/results/m3.2-redaction.md), and the patterns change 0.015% of live Wikimedia events. Sampling keeps each level's share as specified, on Kafka events and on pod logs, which are now parsed and given a normalized level ([ADR 0004](docs/adr/0004-parse-pod-logs-and-trust-only-the-stamp.md)). Replayed events are dropped by event ID, and every drop is counted per team: in kind, 300 of 300 replays removed and info logs kept at 24% against a spec of 25% ([results](docs/results/m3.3-sampling.md)). A team's budget is a cap across all aggregators: each enforces an even share, and pod logs travel through Kafka so they're shared evenly too. A 10/s budget measured 9.8/s for Kafka and pod-log teams alike, where it had been 17.5/s and 7.9/s ([ADR 0005](docs/adr/0005-budgets-split-across-aggregators.md), [results](docs/results/m3.4-budgets.md)). Teams routed cold get their complete redacted stream in object storage, partitioned by team and date and gzipped: 52,879 events in 98 objects, 0 fixture values ([results](docs/results/m3.5-cold-path.md)). The *Spillway cost* dashboard shows each team's volume and estimated cost, hot vs cold, from byte counters that match what Loki and cold storage hold to within 3% and 0.1% ([results](docs/results/m3.6-cost.md)). A second feeder, GitHub's public events, flows alongside Wikimedia at a twelfth of its rate, with a nested shape and real PII: sampling keeps 20.6% of push events against a spec of 20%, and cold storage holds 0 email addresses ([results](docs/results/m3.7-github-feeder.md)). **M4 (proof and polish) has started:** under stepped load from a synthetic feeder, one team with dedupe, redaction, and hot and cold routing [sustained 32,000 events/s](docs/results/m4.1-benchmark.md) on two aggregators in kind, with p99 latency of 29 ms up to 3,000 events/s, rising to 3.7 s at 32,000/s. Every one of 35.5 million events through 40,000/s reached Loki exactly once. [Chaos experiments](docs/results/m4.2-chaos.md) count every event by ID through an aggregator kill, a frozen Loki, frozen cold storage and an agent kill: none lost. A full disk crashed Vector and lost 47 acknowledged events, and the agent was found to drop a third of a busy container's logs with no fault at all (fixed). See the [build plan](docs/plan.md).
-
-## Architecture
+## How it works
 
 ```
-Wikimedia EventStreams ──► wikimedia-feeder (Go) ──┐
-GitHub public events ────► github-feeder (Go) ─────┤
-                                                    ├──► Kafka (Strimzi) ──► Vector aggregators ──► Loki ──► Grafana
-pod logs on every node ──► Vector agent (DaemonSet) ┘                              │
-                                                                                   └──► Prometheus (pipeline metrics)
+Wikimedia, GitHub ──► feeders (Go) ──┐
+                                     ├──► Kafka ──► Vector aggregators ──┬──► Loki (hot) ──► Grafana
+pod logs ──► Vector agents ──────────┘         ▲                        └──► S3 (cold)
+                                               │
+              LogPipeline specs ──► operator: render, validate, canary
 ```
 
-- **Feeders:** [`feeders/wikimedia`](feeders/wikimedia) reads the `recentchange` SSE stream, resumes from the last event ID after a disconnect, and stamps each event with a unique ID and a produce timestamp before writing it to Kafka. [`feeders/github`](feeders/github) polls GitHub's public events API within its rate limit (60 requests an hour without a token), and paces each poll's events evenly until the next, so a burst doesn't hit a team's budget all at once.
-- **Aggregator** ([`vector/aggregator`](vector/aggregator)): consumes from Kafka and stamps each event with a pre-sink time, so feeder-to-sink latency can be measured. It writes to Loki through a 1 GiB disk buffer and commits Kafka offsets only once events are in that buffer.
-- **Agent** ([`vector/agent`](vector/agent)): runs on every node, tails pod logs, and writes them to the `spillway.pods` Kafka topic, spread over its partitions, so the aggregators share them evenly ([ADR 0005](docs/adr/0005-budgets-split-across-aggregators.md)). The aggregators write them to Loki through a separate sink, labelled `namespace`, `pod` and `container`.
-- **Operator** ([`cmd/operator`](cmd/operator), [`internal/controller`](internal/controller)): watches `LogPipeline` resources, one per team. On every change it renders all of them, validates the result with the Vector binary bundled in its image, and writes it to the aggregator's ConfigMap ([ADR 0001](docs/adr/0001-validate-in-the-operator-image.md)). It then canaries the new config on one of the two aggregator pods for 2 minutes. It compares that pod's errors and sink delivery with the other pod's, then promotes or rolls back, and sets each pipeline's Ready condition. A change whose canary fails is quarantined: that pipeline keeps running its last good spec, and other teams' changes still roll out. If several changes fail together, each is retried alone, and only the ones that fail alone stay quarantined. A pipeline Vector rejects is marked Invalid with Vector's error. If the pipelines only fail together, nothing is applied and the aggregator keeps its last valid config. If two pipelines conflict, the older one keeps the team or namespace and the newer one is marked Invalid. Manual edits to the ConfigMap are reverted.
-- **Renderer** ([`internal/render`](internal/render)): turns LogPipelines into one aggregator config. Each team's events are tagged, deduplicated by event ID and redacted (every pattern unless the spec says otherwise), then split. Pod logs are parsed first: JSON lines become fields, and every line gets a normalized `level`. Cold storage gets the complete redacted stream. The hot path is sampled and rate-capped before Loki, with each aggregator enforcing an even share of the team's budget. Sinks are shared, so adding a team doesn't add disk buffers. Data no team claims takes the platform defaults: the M1 paths above, with every PII pattern masked. A topic or namespace a team claims leaves those paths. With no LogPipelines the render is the platform config, and [`vector/aggregator/vector.yaml`](vector/aggregator/vector.yaml) is generated from it. The rendered config for each example is checked in under [`internal/render/testdata`](internal/render/testdata) and validated by Vector in CI.
-- **Self-monitoring**: Prometheus scrapes the feeder and every Vector instance. The *Spillway pipeline* dashboard ([`dashboards/pipeline.json`](dashboards/pipeline.json)) shows throughput, latency, consumer lag, buffer size and errors.
+- **Operator:** renders every team's spec into one aggregator config, checks it with `vector validate`, then canaries it on one aggregator. It promotes the config if errors and delivery hold, and rolls it back otherwise, quarantining only the failing team's change ([ADR 0001](docs/adr/0001-validate-in-the-operator-image.md), [0002](docs/adr/0002-canary-rollout-with-statefulset-partition.md)).
+- **Per-team pipeline:** dedupe by event ID, then redaction (on by default; [ADR 0003](docs/adr/0003-redaction-on-by-default.md)). The complete stream goes to cold storage. The hot path is sampled per level and capped by a budget shared across aggregators ([ADR 0005](docs/adr/0005-budgets-split-across-aggregators.md)). Pod logs are parsed and given a normalized level ([ADR 0004](docs/adr/0004-parse-pod-logs-and-trust-only-the-stamp.md)).
+- **Delivery:** Kafka offsets are committed only once events are in a sink's disk buffer. Data no team claims still reaches Loki, redacted.
 
 ## Quickstart
 
-You need Docker, `make` and `curl`. Go 1.27 is needed only for `make test`, and `python3` only for `make baseline`. The versions of kind, kubectl, helm and the Go tooling (golangci-lint, controller-gen, setup-envtest) that the repo uses are downloaded into `./bin` automatically.
+Needs Docker, `make` and `curl`; pinned kind, kubectl and helm are fetched into `./bin`.
 
 ```bash
-make up            # kind cluster + Kafka, Loki, Prometheus, Grafana + feeder, aggregator, agents, operator (~5 min)
-make grafana-ui    # http://localhost:3000, prints the admin password
-make down          # delete the cluster; nothing is left behind
+make up                                   # kind cluster and the whole stack, ~5 min
+export KUBECONFIG=$PWD/.kubeconfig
+bin/kubectl apply -f examples/edits.yaml  # onboard a team
+bin/kubectl get lp                        # Ready once its canary passes
+make grafana-ui                           # http://localhost:3000; try {team="edits"}
+make down
 ```
 
-The cluster's kubeconfig is written to `./.kubeconfig`, so your `~/.kube/config` is never touched. If you use [mise](https://mise.jdx.dev), the repo's [`mise.toml`](mise.toml) sets Go, `PATH` and `KUBECONFIG` for you.
-
-In Grafana's Explore view, try `{feeder="wikimedia"}` for edits or `{namespace="kafka"}` for pod logs.
-
-To onboard a team, `kubectl apply -f examples/edits.yaml` (export `KUBECONFIG` first, as above). Within seconds, `{team="edits"}` shows the Wikimedia stream with its sampling and budget applied, and `kubectl get lp` tracks it through the canary to Ready, about 2 minutes later.
-
-## LogPipeline
-
-Each team describes its pipeline in one resource. See [`examples/`](examples) for more.
+## A LogPipeline
 
 ```yaml
 apiVersion: spillway.dev/v1alpha1
@@ -60,102 +52,19 @@ spec:
   sources:
     - name: services
       kubernetes: {namespaces: [payments]}   # or kafka: {topic: ...}
-  redaction: {patterns: [ssn, email, phone, memberId]}   # the default; {disabled: true} opts out
   sampling: {keepPercent: {debug: 0, info: 25}}
   budget: {maxEventsPerSec: 500}
   routing: {hot: true, cold: true}
 ```
 
-The schema is enforced by the API server, so `kubectl apply` rejects a malformed spec and reports every error at once:
-
-```
-The LogPipeline "broken" is invalid:
-* spec.sampling.keepPercent.info: Invalid value: 150: ... should be less than or equal to 100
-* spec.team: Invalid value: "Payments": ... should match '^[a-z0-9]([-a-z0-9]*[a-z0-9])?$'
-* spec.sources[0]: Invalid value: exactly one of kafka or kubernetes must be set
-* spec.routing: Invalid value: at least one of hot or cold must be enabled
-```
-
-Once a spec is applied, `kubectl get lp` shows whether it's running:
-
-```
-NAME        TEAM        READY   REASON      MESSAGE
-wiki        wiki        True    RolledOut   the aggregator is running config that includes this pipeline
-wiki-copy   wiki        False   Invalid     team "wiki" is claimed by both default/wiki and default/wiki-copy
-content     content     False   CanaryFailed   generation 1 config 8232df0ccaed7f8c was rolled back: canary pod vector-aggregator-1 logged 8 errors in 15s against 0 on stable pod vector-aggregator-0. Change the spec to try again
-payments    payments    False   Invalid     default/payments routes to cold storage, but no cold storage is configured
-```
-
-### Checking specs without a cluster
-
-`spillwayctl` runs the operator's checks locally, for a quick loop while writing a spec or as a CI step:
-1. Each spec is checked against the CRD schema, using the API server's own validation libraries, so you see the same errors `kubectl apply` would give.
-2. All specs are rendered together, which catches conflicts such as a team claimed twice.
-3. The rendered config goes through `vector validate`.
-4. The unit tests generated for that config run with `vector test`. The renderer writes tests for every transform it emits, with assertions on behaviour. For example: each PII pattern is masked in nested fields while Spillway's own metadata is kept; a 0% level is dropped; a claimed namespace leaves the platform path.
-
-```bash
-make spillwayctl
-bin/spillwayctl validate --vector-bin bin/vector examples/        # exit 1 if anything is invalid
-bin/spillwayctl render examples/minimal.yaml > aggregator.yaml   # the config the operator would apply
-```
-
-```
-examples/minimal.yaml (search): ok
-broken.yaml (broken): INVALID
-  * spec.sources[0]: Invalid value: exactly one of kafka or kubernetes must be set
-render: ok (1 pipeline)
-```
-
-`routing: {cold: true}` sends the team's complete redacted stream, before sampling and its budget, to object storage, as gzip JSON lines under `team=<team>/date=<YYYY-MM-DD>/`. Locally that's Silo, a maintained MinIO fork installed by `make up` ([ADR 0006](docs/adr/0006-silo-for-local-cold-storage.md)), and `make cold-check` checks every object in it. An operator started without `--cold-bucket` marks cold-routed pipelines Invalid instead of rolling out a sink with nowhere to write.
+More in [`examples/`](examples). `bin/spillwayctl validate --vector-bin bin/vector examples/` (after `make spillwayctl`) runs the operator's checks without a cluster.
 
 ## Development
 
-| Command | What it does |
+| | |
 |---|---|
-| `make test` | Go unit tests with the race detector, CRD and operator tests against a real API server ([envtest](https://book.kubebuilder.io/reference/envtest)), and `vector validate` on rendered config, including random schema-valid specs |
-| `make generate` | Regenerate the CRD, RBAC and deepcopy code from the Go types. CI fails if they're out of date |
-| `make lint` | golangci-lint |
-| `make vector-check` | `vector validate` and the generated `vector test` suite on the aggregator config and every rendered example, plus `vector validate` on the agent config |
-| `make baseline` | Volume and latency over the last 15 minutes, as Markdown |
-| `make fixtures` | Inject known, fictional PII into the live streams (`RATE=` per second, default 1): recentchange-shaped events into the Wikimedia topic, and JSON log lines in the `fixtures` namespace. Each is tagged `spillway.fixture: {id, pattern}`, so it can be counted in any sink |
-| `make leak-check` | Search every hot-sink stream for fixture values over `WINDOW` (default 15m). Fails on any leak, or if no fixtures arrived |
-| `make bench` | Stepped-load benchmark against a fresh `make up`: synthetic feeder events at each rate in `STEPS` for `STEP` each, through a team with redaction, dedupe, hot and cold. Reports throughput, backlog, drops and p99 latency per step, and exact end-to-end counts |
-| `make chaos` | Chaos experiments against a fresh `make up`: aggregator kill, Loki and cold storage frozen, disk full, agent kill. Every event of each run is counted in Loki and S3 by event ID |
-| `make redaction-fp` | Capture `DURATION` seconds of the live Wikimedia stream and report what each redaction pattern masks |
+| `make test`, `make lint`, `make vector-check` | Go tests (with a real API server and Vector), lint, and Vector's validation and generated unit tests. CI runs these, plus `make generate` |
+| `make bench`, `make chaos` | The throughput benchmark and the chaos experiments, against a fresh `make up` |
 | `make help` | Every target |
 
-CI runs `lint`, `generate`, `test` and `vector-check` on every PR.
-
-## Baseline (M1)
-
-Measured on live traffic over 15 minutes, with no sampling or redaction. The full report is in [`docs/results/baseline.md`](docs/results/baseline.md).
-
-| Events/s | Event bytes into Loki | p50 latency | p99 latency | Errors / drops |
-|---|---|---|---|---|
-| 46 | 6.0 GiB/day | 17 ms | < 30 ms | 0 / 0 |
-
-Latency is measured from the feeder handing an event to Kafka until the aggregator's last step before the Loki sink. Throughput is whatever Wikimedia sent during the window, not the pipeline's capacity. Capacity under stepped load is in the [M4.1 benchmark](docs/results/m4.1-benchmark.md): 32,000 events/s sustained, with p99 at the baseline's 29 ms up to 3,000 events/s.
-
-## Layout
-
-```
-api/v1alpha1/        LogPipeline API types (the CRD is generated from these)
-cmd/operator/        operator entrypoint and Dockerfile
-cmd/spillwayctl/     CLI: validate and render specs without a cluster
-internal/controller/ LogPipeline reconciler
-internal/render/     LogPipeline → Vector config, with golden files
-internal/redact/     PII patterns as VRL redact() filters, and the positive/negative corpus
-internal/validate/   vector validate gate for rendered config
-internal/schema/     offline CRD schema validation (same libraries as the API server)
-examples/            example LogPipeline specs
-feeders/wikimedia/   Go SSE → Kafka feeder
-feeders/github/      Go poller of GitHub's public events → Kafka feeder
-feeders/fixtures/    fictional-PII fixture injector (Kafka and pod logs)
-feeders/loadgen/     stepped-rate load generator of synthetic feeder events, for the benchmark and the chaos runs
-vector/              agent and aggregator configs, Helm values, unit tests
-deploy/              kind cluster, platform Helm values and manifests (including local S3 storage), feeder, benchmark and operator manifests (generated CRD and RBAC)
-dashboards/          Grafana dashboards: pipeline health, and cost per team
-bench/               measurements: baseline, M2 gate, redaction false positives, fixture leak check, per-team drops and budgets, cold storage check, cost report, stepped-load benchmark, chaos experiments with per-event checks
-docs/                build plan, results and ADRs
-```
+The [build plan](docs/plan.md) tracks progress, [`docs/adr`](docs/adr) records the design decisions, and [`CLAUDE.md`](CLAUDE.md) is the detailed guide to how the system fits together.
