@@ -1,0 +1,45 @@
+# The chaos experiments' two teams (bench/m4_chaos.sh), both reading the load
+# generator's topic, each with its own consumer group.
+#
+# chaos drops nothing, so every event must reach both sinks: the check is
+# exact, by event ID. It also claims the chaos-pods namespace, where the
+# generator writes the agent scenario's events as pod logs.
+apiVersion: spillway.dev/v1alpha1
+kind: LogPipeline
+metadata:
+  name: chaos
+spec:
+  team: chaos
+  sources:
+    - name: load
+      kafka:
+        topic: chaos.load
+    - name: pods
+      kubernetes:
+        namespaces: [chaos-pods]
+  routing:
+    hot: true
+    cold: true
+---
+# chaosdrop drops on purpose: every debug event (each fourth, by sequence
+# number) is sampled out, and a budget below the rate throttles the rest. Its
+# hot sink must hold what was produced less the sampled and the throttled;
+# cold holds everything.
+apiVersion: spillway.dev/v1alpha1
+kind: LogPipeline
+metadata:
+  name: chaosdrop
+spec:
+  team: chaosdrop
+  sources:
+    - name: load
+      kafka:
+        topic: chaos.load
+  sampling:
+    keepPercent:
+      debug: 0
+  budget:
+    maxEventsPerSec: 600
+  routing:
+    hot: true
+    cold: true
