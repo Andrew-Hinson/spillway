@@ -1,0 +1,16 @@
+# Topic for the chaos experiments' load generator (bench/m4_chaos.sh). Six
+# partitions, three per aggregator, like spillway.pods (docs/adr/0005).
+apiVersion: kafka.strimzi.io/v1
+kind: KafkaTopic
+metadata:
+  name: chaos.load
+  namespace: kafka
+  labels:
+    strimzi.io/cluster: spillway
+spec:
+  partitions: 6
+  replicas: 1
+  config:
+    retention.ms: 3600000          # 1 hour
+    retention.bytes: 1073741824    # 1 GiB per partition
+    segment.bytes: 67108864        # 64 MiB

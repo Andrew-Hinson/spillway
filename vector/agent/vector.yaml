@@ -13,6 +13,11 @@ sources:
   pods:
     type: kubernetes_logs
     self_node_name: ${VECTOR_SELF_NODE_NAME}
+    # Look for new log files every second, not every 60 s (the default).
+    # Kubelet rotates a container's log at 10 MiB, and the source never reads
+    # the renamed file: with a 60 s cooldown, a container writing 750 KB/s
+    # lost a third of its lines in kind (docs/results/m4.2-chaos.md).
+    glob_minimum_cooldown_ms: 1000
 
   internal_metrics:
     type: internal_metrics

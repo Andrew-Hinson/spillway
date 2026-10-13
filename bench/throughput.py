@@ -139,33 +139,41 @@ def measure(p, start, end):
     return m
 
 
-def exact_totals(p, start, end):
-    """Exact counts over [start, end], from every raw sample of each counter.
+def counter_total(p, metric, sel, start, end):
+    """Exact count of a counter over [start, end], from every raw sample.
     increase() extrapolates to the range's edges, and a value at the end
     misses series that expired (Vector drops an idle component's metrics) or
     were left over from a previous run (a removed component's counter is
     exported a while longer). So each series is walked sample by sample, and
-    a drop is taken as a restart from 0."""
+    a drop is taken as a restart from 0. Vector creates a series with its
+    first event (one per Kafka partition, say), so one absent at the start
+    counts from 0. Exact unless a pod was killed: its last increments are
+    never scraped."""
     d = int((end - start).total_seconds())
 
     def key(series):
         return tuple(sorted(series["metric"].items()))
 
-    def count(metric, sel):
-        # Vector creates a series with its first event (one per Kafka
-        # partition, say), so one absent at the start counts from 0.
-        before = {key(s): float(s["value"][1]) for s in p.query(f"{metric}{{{sel}}}", start)}
-        total = 0.0
-        for series in p.query(f"{metric}{{{sel}}}[{d}s]", end):
-            prev = before.get(key(series), 0.0)
-            for _, v in series["values"]:
-                v = float(v)
-                total += v - prev if v >= prev else v
-                prev = v
-        return total
+    before = {key(s): float(s["value"][1]) for s in p.query(f"{metric}{{{sel}}}", start)}
+    total = 0.0
+    for series in p.query(f"{metric}{{{sel}}}[{d}s]", end):
+        prev = before.get(key(series), 0.0)
+        for _, v in series["values"]:
+            v = float(v)
+            total += v - prev if v >= prev else v
+            prev = v
+    return total
 
-    if not p.query(f"vector_component_received_events_total{{{AGG},component_id=\"{SOURCE}\"}}[{d}s]", end):
+
+def exact_totals(p, start, end):
+    """The bench team's counts at each stage over [start, end]."""
+    d = int((end - start).total_seconds())
+    if not p.query(f'vector_component_received_events_total{{{AGG},component_id="{SOURCE}"}}[{d}s]', end):
         raise SystemExit("no bench source metrics during the run: was the bench pipeline deleted before the report?")
+
+    def count(metric, sel):
+        return counter_total(p, metric, sel, start, end)
+
     t = {
         "consumed": count("vector_component_received_events_total", f'{AGG},component_id="{SOURCE}"'),
         "discarded": count("vector_component_discarded_events_total", f'{AGG},team="{TEAM}"'),
@@ -186,17 +194,18 @@ def loki_lines(url, start, end):
     return int(float(res[0]["value"][1])) if res else 0
 
 
-def wait_drain(p, timeout):
-    """Wait until the run's backlog (Kafka lag and both sink buffers) is gone,
-    so the totals include every event. Returns when it was, or None."""
-    sel = f'{AGG},component_id=~"{SOURCE}|{"|".join(SINKS)}"'
+def wait_drain(p, timeout, components=f'{SOURCE}|{"|".join(SINKS)}', slack=0):
+    """Wait until the backlog (Kafka lag of the sources and the sinks'
+    buffers, among components, a regex) is at most slack (0: gone), so the
+    totals include every event. Returns when it was, or None."""
+    sel = f'{AGG},component_id=~"{components}"'
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         now = dt.datetime.now(dt.timezone.utc)
         # Vector briefly reports a partition's lag as negative; that's no backlog.
         backlog = p.scalar(f'(sum(clamp_min(vector_kafka_consumer_lag{{{sel}}}, 0)) or vector(0))'
                            f' + (sum(vector_buffer_size_events{{{sel}}}) or vector(0))', now)
-        if backlog == 0:
+        if backlog <= slack:
             # One more scrape, so the counters include the last events.
             time.sleep(35)
             return dt.datetime.now(dt.timezone.utc)

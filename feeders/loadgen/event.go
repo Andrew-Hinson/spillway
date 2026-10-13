@@ -44,6 +44,37 @@ type Event struct {
 	ParsedComment    string   `json:"parsedcomment"`
 	Spillway         Stamp    `json:"spillway"`
 	Tags             []string `json:"tags,omitempty"`
+	// Set only for a named run (-run), so the chaos checks can count every
+	// event by ID: see RunTag.
+	Level   string  `json:"level,omitempty"`
+	Loadgen *RunTag `json:"loadgen,omitempty"`
+}
+
+// RunTag identifies an event within a named run. Its event_id is derived
+// from the run and seq (EventID), so a checker can tell which events are
+// missing or duplicated, not only how many.
+type RunTag struct {
+	Run string `json:"run"`
+	Seq int64  `json:"seq"`
+}
+
+// idSpace is the UUID namespace for run event IDs (bench/eventcheck.py
+// derives the same IDs).
+var idSpace = uuid.MustParse("6f1c2a8e-3b5d-4c7a-9e21-5d8b0f4a7c63")
+
+// EventID is the event_id of event seq in run: a name-based (SHA-1) UUID of
+// "run/seq".
+func EventID(run string, seq int64) string {
+	return uuid.NewSHA1(idSpace, fmt.Appendf(nil, "%s/%d", run, seq)).String()
+}
+
+// LevelOf gives every fourth event of a run the level debug, so a team that
+// drops debug drops a known set.
+func LevelOf(seq int64) string {
+	if seq%4 == 0 {
+		return "debug"
+	}
+	return "info"
 }
 
 type Meta struct {
@@ -89,10 +120,18 @@ type Generator struct {
 	next   int64
 	feeder string
 	topic  string
+	run    string // tags events and derives their IDs, if set
 }
 
 func NewGenerator(seed uint64, feeder, topic string) *Generator {
 	return &Generator{rng: rand.New(rand.NewPCG(seed, seed^0x9e3779b97f4a7c15)), next: 1, feeder: feeder, topic: topic}
+}
+
+// ForRun tags each event with run and its sequence number (from 1), and
+// derives its event_id from them.
+func (g *Generator) ForRun(run string) *Generator {
+	g.run = run
+	return g
 }
 
 // Next returns the next event, stamped as produced at now, as JSON.
@@ -144,6 +183,11 @@ func (g *Generator) Next(now time.Time) ([]byte, error) {
 	}
 	if r.IntN(4) == 0 {
 		ev.Tags = []string{"mobile edit", "mobile web edit"}
+	}
+	if g.run != "" {
+		ev.Spillway.EventID = EventID(g.run, id)
+		ev.Level = LevelOf(id)
+		ev.Loadgen = &RunTag{Run: g.run, Seq: id}
 	}
 	return json.Marshal(ev)
 }
