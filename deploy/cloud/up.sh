@@ -14,6 +14,24 @@ log() { printf '%s %s\n' "$(date -u +%H:%M:%S)" "$*"; }
 
 aws sts get-caller-identity --query Account --output text >/dev/null
 
+# Before anything is billed: every image the cluster will run must be
+# published, and pullable without credentials (GHCR makes a new package
+# private until its visibility is changed in GitHub's settings).
+registry=ghcr.io/andrew-hinson/spillway
+missing=0
+anon=$(mktemp -d)   # an empty Docker config: check as an anonymous client would
+while IFS=: read -r name _ tag _; do
+  if ! DOCKER_CONFIG=$anon docker manifest inspect "$registry/$name:$tag" >/dev/null 2>&1; then
+    echo "not pullable: $registry/$name:$tag" >&2
+    missing=1
+  fi
+done < <(make -s image-list)
+rmdir "$anon"
+if [ "$missing" = 1 ]; then
+  echo "Publish them (the Images workflow runs on every push to main) and make the packages public first." >&2
+  exit 1
+fi
+
 tf init -input=false
 tf apply -input=false   # prompts for "yes"
 
