@@ -1,6 +1,6 @@
 # ADR 0007: The cloud environment: EKS from Terraform, the stack from Argo CD
 
-Status: proposed · 2026-10-14 · M4.3
+Status: accepted · 2026-10-14 · M4.3
 
 ## Context
 
