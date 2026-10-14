@@ -30,6 +30,14 @@ spec:
         valueFiles: [$values/deploy/platform/strimzi/values.yaml]
     - {{- include "spillway.repo" . | nindent 6 }}
       ref: values
+  # The chart's kafkas CRD has an empty `properties: {}` that the API server
+  # drops, so it would never match.
+  ignoreDifferences:
+    - group: apiextensions.k8s.io
+      kind: CustomResourceDefinition
+      name: kafkas.kafka.strimzi.io
+      jqPathExpressions:
+        - .spec.versions[].schema.openAPIV3Schema.properties.status.properties.clusterSecurity.properties
 ---
 {{ include "spillway.meta" (dict "name" "kafka" "wave" 1) }}
 spec:

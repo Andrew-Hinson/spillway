@@ -13,6 +13,11 @@ configs:
   params:
     # TLS ends at the port-forward; there's no ingress.
     server.insecure: true
+    # Diff against a server-side dry run, as the Applications apply with
+    # server-side apply. Diffing client-side, the API server's defaults
+    # (apiVersion and kind in a StatefulSet's volumeClaimTemplates) left the
+    # aggregator, and Strimzi's kafkas CRD, OutOfSync forever in kind.
+    controller.diff.server.side: "true"
   cm:
     # The kustomizations in deploy/cloud/k8s wrap the manifests `make up`
     # applies (deploy/, vector/, dashboards/) rather than copying them, so
