@@ -1,0 +1,10 @@
+# The aggregators' bootstrap config, as `make aggregator` seeds it. The
+# operator adds a file per rendered revision to this ConfigMap; server-side
+# apply leaves those keys to it.
+namespace: vector
+generatorOptions:
+  disableNameSuffixHash: true
+configMapGenerator:
+  - name: vector-aggregator-config
+    files:
+      - ../../../../vector/aggregator/vector.yaml

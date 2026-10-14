@@ -1,0 +1,5 @@
+apiVersion: v2
+name: spillway-apps
+description: Argo CD Applications for the whole Spillway stack (app of apps). Installed by `make argocd`.
+type: application
+version: 0.1.0

@@ -1,0 +1,5 @@
+# The manifests say Never, for images loaded into kind. Here they come from a
+# registry (or, in the kind profile, are loaded by `make kind-images`).
+- op: replace
+  path: /spec/template/spec/containers/0/imagePullPolicy
+  value: IfNotPresent

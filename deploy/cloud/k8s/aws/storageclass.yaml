@@ -1,0 +1,14 @@
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: gp3
+  annotations:
+    storageclass.kubernetes.io/is-default-class: "true"
+provisioner: ebs.csi.aws.com
+parameters:
+  type: gp3
+# Created in the zone of the pod that first uses it.
+volumeBindingMode: WaitForFirstConsumer
+# Released with the claim, so `make cloud-down` leaves no volumes behind.
+reclaimPolicy: Delete
+allowVolumeExpansion: true

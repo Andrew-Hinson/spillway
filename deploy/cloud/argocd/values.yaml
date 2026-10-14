@@ -1,0 +1,40 @@
+# Argo CD (chart: argo-cd, https://argoproj.github.io/argo-helm), lean: one
+# of each component, no SSO, notifications or ApplicationSets. Reach the UI
+# with `bin/kubectl -n argocd port-forward svc/argocd-server 8080:80`; the
+# admin password is in the argocd-initial-admin-secret Secret.
+dex:
+  enabled: false
+notifications:
+  enabled: false
+applicationSet:
+  replicas: 0
+
+configs:
+  params:
+    # TLS ends at the port-forward; there's no ingress.
+    server.insecure: true
+  cm:
+    # The kustomizations in deploy/cloud/k8s wrap the manifests `make up`
+    # applies (deploy/, vector/, dashboards/) rather than copying them, so
+    # they read files outside their own directory.
+    kustomize.buildOptions: --load-restrictor LoadRestrictionsNone
+    # Sync waves between Applications (deploy/cloud/apps) wait for each wave
+    # to be healthy only if Argo CD assesses an Application's health.
+    resource.customizations.health.argoproj.io_Application: |
+      hs = {}
+      hs.status = "Progressing"
+      hs.message = ""
+      if obj.status ~= nil and obj.status.health ~= nil then
+        hs.status = obj.status.health.status
+        if obj.status.health.message ~= nil then
+          hs.message = obj.status.health.message
+        end
+      end
+      return hs
+  repositories:
+    # The Strimzi chart is published only as an OCI artifact.
+    strimzi:
+      type: helm
+      name: strimzi
+      url: quay.io/strimzi-helm
+      enableOCI: "true"

@@ -34,6 +34,7 @@ HELM_VERSION    := v4.3.0
 GOLANGCI_LINT_VERSION := v2.14.0
 CONTROLLER_GEN_VERSION := v0.22.0
 SETUP_ENVTEST_VERSION  := v0.25.2
+TERRAFORM_VERSION      := 1.16.5
 # Kubernetes version of the API server the CRD validation tests run against;
 # matches the kind node image.
 ENVTEST_K8S_VERSION    := 1.37.0
@@ -44,20 +45,25 @@ LOKI_CHART_VERSION    := 18.13.7
 GRAFANA_CHART_VERSION := 13.2.7
 PROMETHEUS_CHART_VERSION := 29.35.0
 VECTOR_CHART_VERSION  := 0.58.0
+ARGOCD_CHART_VERSION  := 10.10.3
 VECTOR_VERSION        := 0.58.0
 VECTOR_IMAGE          := timberio/vector:$(VECTOR_VERSION)-distroless-libc
 GRAFANA_CHARTS        := https://grafana-community.github.io/helm-charts
 PLATFORM              := deploy/platform
 HELM_INSTALL           = $(HELM) upgrade --install --wait --timeout 10m
 
-# Feeder images are tagged with a hash of their source, so the Deployment only
-# rolls when the code changes.
+# Images are tagged with a hash of their source, so a Deployment only rolls
+# when the code changes. Tracked files in C order, so every machine (and CI,
+# which checks deploy/cloud/apps/generated.yaml) gets the same hash.
+src_hash = $(shell (cat go.mod go.sum; git ls-files -- $(1) | LC_ALL=C sort | xargs cat) | sha256sum | cut -c1-12)
 WIKIMEDIA_IMAGE := spillway/wikimedia-feeder
-WIKIMEDIA_TAG    = $(shell cat go.mod go.sum $$(find feeders/wikimedia -type f | sort) | sha256sum | cut -c1-12)
+WIKIMEDIA_TAG    = $(call src_hash,feeders/wikimedia)
 GITHUB_IMAGE    := spillway/github-feeder
-GITHUB_TAG       = $(shell cat go.mod go.sum $$(find feeders/github -type f | sort) | sha256sum | cut -c1-12)
+GITHUB_TAG       = $(call src_hash,feeders/github)
 OPERATOR_IMAGE  := spillway/operator
-OPERATOR_TAG     = $(shell (echo $(VECTOR_VERSION); cat go.mod go.sum $$(find api cmd/operator internal -type f | sort)) | sha256sum | cut -c1-12)
+OPERATOR_TAG     = $(shell (echo $(VECTOR_VERSION); cat go.mod go.sum; git ls-files -- api cmd/operator internal | LC_ALL=C sort | xargs cat) | sha256sum | cut -c1-12)
+LOADGEN_IMAGE   := spillway/loadgen
+LOADGEN_TAG      = $(call src_hash,feeders/loadgen)
 # Must be one of the images built for KIND_VERSION, pinned by digest (see kind release notes).
 KIND_NODE_IMAGE := kindest/node:v1.37.0@sha256:a1ed56cfb0e7b93589bdf97c8cd566405a265939e3620fc4f5de89adff580ae5
 
@@ -68,6 +74,7 @@ HELM    := $(BIN)/helm-$(HELM_VERSION)
 GOLANGCI_LINT := $(BIN)/golangci-lint-$(GOLANGCI_LINT_VERSION)
 CONTROLLER_GEN := $(BIN)/controller-gen-$(CONTROLLER_GEN_VERSION)
 SETUP_ENVTEST  := $(BIN)/setup-envtest-$(SETUP_ENVTEST_VERSION)
+TERRAFORM      := $(BIN)/terraform-$(TERRAFORM_VERSION)
 # Vector for the validation tests, the same version the aggregator and the
 # operator image run. Release builds: macOS on arm64, static Linux builds.
 VECTOR         := $(BIN)/vector-$(VECTOR_VERSION)
@@ -183,7 +190,7 @@ github-feeder: docker-check $(KIND) $(KUBECTL) ## Build, load and deploy the Git
 	$(KUBECTL) -n feeders rollout status deployment/github-feeder --timeout=3m
 
 FIXTURES_IMAGE  := spillway/fixtures
-FIXTURES_TAG     = $(shell cat go.mod go.sum $$(find feeders/fixtures -type f | sort) | sha256sum | cut -c1-12)
+FIXTURES_TAG     = $(call src_hash,feeders/fixtures)
 
 .PHONY: fixtures
 fixtures: docker-check $(KIND) $(KUBECTL) ## Inject known fake PII into the live streams (opt-in; RATE=fixtures/s, default 1)
@@ -328,6 +335,7 @@ generate: $(CONTROLLER_GEN) ## Regenerate deepcopy code, the CRD and operator RB
 	$(CONTROLLER_GEN) object paths=./api/...
 	$(CONTROLLER_GEN) crd rbac:roleName=spillway-operator paths=./api/... paths=./internal/... \
 		output:crd:artifacts:config=deploy/operator/crd output:rbac:artifacts:config=deploy/operator/rbac
+	@$(MAKE) -s cloud-values
 
 .PHONY: lint
 lint: $(GOLANGCI_LINT) ## Lint the Go code
@@ -349,8 +357,67 @@ docker-check:
 		echo "error: cannot reach the Docker daemon. Is it running, and can $$USER use it (docker group)?" >&2; \
 		exit 1; }
 
+# The cloud environment (M4.3): EKS and S3 from Terraform
+# (deploy/cloud/terraform), and everything on it from Argo CD
+# (deploy/cloud/apps). Uses the AWS CLI's default profile, or AWS_PROFILE.
+TF        = $(TERRAFORM) -chdir=deploy/cloud/terraform
+CLOUD_KUBECONFIG := $(CURDIR)/.kubeconfig-cloud
+
+# Images built from this repo: name, Dockerfile, tag, build args. The images
+# workflow publishes them to GHCR; the cloud profile pulls them from there.
+IMAGES = operator:cmd/operator/Dockerfile:$(OPERATOR_TAG):VECTOR_VERSION=$(VECTOR_VERSION) \
+	wikimedia-feeder:feeders/wikimedia/Dockerfile:$(WIKIMEDIA_TAG): \
+	github-feeder:feeders/github/Dockerfile:$(GITHUB_TAG): \
+	loadgen:feeders/loadgen/Dockerfile:$(LOADGEN_TAG): \
+	fixtures:feeders/fixtures/Dockerfile:$(FIXTURES_TAG):
+
+.PHONY: image-list
+image-list: ## Print each image built from this repo: name:Dockerfile:tag:build-arg
+	@printf '%s\n' $(IMAGES)
+
+.PHONY: cloud-values
+cloud-values: ## Write deploy/cloud/apps/generated.yaml: chart versions and image tags (part of make generate)
+	@{ \
+	echo '# Generated by `make generate` from the Makefile: the chart versions `make up`'; \
+	echo '# installs and the tags of the images built from this repo. Do not edit.'; \
+	echo 'charts:'; \
+	echo '  strimzi: $(STRIMZI_CHART_VERSION)'; \
+	echo '  loki: $(LOKI_CHART_VERSION)'; \
+	echo '  prometheus: $(PROMETHEUS_CHART_VERSION)'; \
+	echo '  grafana: $(GRAFANA_CHART_VERSION)'; \
+	echo '  vector: $(VECTOR_CHART_VERSION)'; \
+	echo 'images:'; \
+	echo '  tags:'; \
+	for i in $(IMAGES); do IFS=: read -r name _ tag _ <<< "$$i"; echo "    $$name: \"$$tag\""; done; \
+	echo 'agentConfigChecksum: "$(shell sha256sum vector/agent/vector.yaml | cut -c1-12)"'; \
+	} > deploy/cloud/apps/generated.yaml
+
+.PHONY: kind-images
+kind-images: docker-check $(KIND) ## Build every image and load it into kind, for `make argocd`
+	@for i in $(IMAGES); do IFS=: read -r name file tag arg <<< "$$i"; \
+		docker build -q -t spillway/$$name:$$tag $${arg:+--build-arg $$arg} -f $$file . && \
+		$(KIND) load docker-image spillway/$$name:$$tag --name $(CLUSTER_NAME) || exit 1; \
+	done
+
+.PHONY: argocd
+argocd: $(HELM) $(KUBECTL) ## Deploy the stack to kind with Argo CD, as the cloud does (REVISION: a pushed branch; after make cluster kind-images)
+	PROFILE=kind REVISION=$(or $(REVISION),main) deploy/cloud/argocd.sh
+
+.PHONY: cloud-plan
+cloud-plan: $(TERRAFORM) ## Show what make cloud-up would create in AWS (creates nothing)
+	$(TF) init -input=false
+	$(TF) plan -input=false
+
+.PHONY: cloud-up
+cloud-up: $(TERRAFORM) $(HELM) $(KUBECTL) ## Create the EKS environment (billed by the hour; asks first) and deploy the stack with Argo CD
+	deploy/cloud/up.sh
+
+.PHONY: cloud-down
+cloud-down: $(TERRAFORM) $(KUBECTL) ## Delete the stack, its volumes and the EKS environment, then check nothing billable is left
+	deploy/cloud/down.sh
+
 .PHONY: tools
-tools: $(KIND) $(KUBECTL) $(HELM) $(GOLANGCI_LINT) $(CONTROLLER_GEN) $(SETUP_ENVTEST) $(VECTOR) ## Install the pinned tools into ./bin
+tools: $(KIND) $(KUBECTL) $(HELM) $(GOLANGCI_LINT) $(CONTROLLER_GEN) $(SETUP_ENVTEST) $(VECTOR) $(TERRAFORM) ## Install the pinned tools into ./bin
 
 $(KIND):
 	@mkdir -p $(BIN)
@@ -395,3 +462,10 @@ $(VECTOR):
 		| tar -xzO ./vector-$(VECTOR_TRIPLE)/bin/vector > $@
 	chmod +x $@
 	ln -sf $(notdir $@) $(BIN)/vector
+
+$(TERRAFORM):
+	@mkdir -p $(BIN)
+	curl -fsSLo $@.zip https://releases.hashicorp.com/terraform/$(TERRAFORM_VERSION)/terraform_$(TERRAFORM_VERSION)_$(OS)_$(ARCH).zip
+	unzip -p $@.zip terraform > $@ && rm $@.zip
+	chmod +x $@
+	ln -sf $(notdir $@) $(BIN)/terraform

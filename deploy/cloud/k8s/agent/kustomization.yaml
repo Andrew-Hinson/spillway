@@ -1,0 +1,8 @@
+# The agents' pipeline, as `make agent` makes it.
+namespace: vector
+generatorOptions:
+  disableNameSuffixHash: true
+configMapGenerator:
+  - name: vector-agent-config
+    files:
+      - ../../../../vector/agent/vector.yaml

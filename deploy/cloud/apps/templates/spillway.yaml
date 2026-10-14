@@ -1,0 +1,80 @@
+{{- /*
+Wave 2: the aggregators. Wave 3: the operator, the agents and the feeders.
+*/ -}}
+{{ include "spillway.meta" (dict "name" "vector-aggregator" "wave" 2) }}
+spec:
+  {{- include "spillway.sync" (dict "namespace" "vector") | nindent 2 }}
+  sources:
+    - repoURL: https://helm.vector.dev
+      chart: vector
+      targetRevision: {{ .Values.charts.vector }}
+      helm:
+        releaseName: vector-aggregator
+        valueFiles:
+          - $values/vector/aggregator/values.yaml
+          {{- if eq .Values.profile "aws" }}
+          - $values/deploy/cloud/values/aggregator-aws.yaml
+          {{- end }}
+    - {{- include "spillway.repo" . | nindent 6 }}
+      ref: values
+    # The bootstrap config. The operator adds a file per config revision to
+    # the same ConfigMap; Argo CD owns only this one key.
+    - {{- include "spillway.repo" . | nindent 6 }}
+      path: deploy/cloud/k8s/aggregator
+---
+{{ include "spillway.meta" (dict "name" "vector-agent" "wave" 3) }}
+spec:
+  {{- include "spillway.sync" (dict "namespace" "vector") | nindent 2 }}
+  sources:
+    - repoURL: https://helm.vector.dev
+      chart: vector
+      targetRevision: {{ .Values.charts.vector }}
+      helm:
+        releaseName: vector-agent
+        valueFiles: [$values/vector/agent/values.yaml]
+        # Rolls the agents when vector/agent/vector.yaml changes.
+        parameters:
+          - name: podAnnotations.checksum/config
+            value: {{ .Values.agentConfigChecksum | quote }}
+            forceString: true
+    - {{- include "spillway.repo" . | nindent 6 }}
+      ref: values
+    - {{- include "spillway.repo" . | nindent 6 }}
+      path: deploy/cloud/k8s/agent
+---
+{{ include "spillway.meta" (dict "name" "operator" "wave" 3) }}
+spec:
+  {{- include "spillway.sync" (dict "namespace" "spillway-system") | nindent 2 }}
+  source:
+    {{- include "spillway.repo" . | nindent 4 }}
+    path: deploy/cloud/k8s/operator
+    kustomize:
+      images:
+        - {{ include "spillway.image" (dict "name" "operator" "root" .) }}
+      {{- with .Values.cold }}
+      {{- if .bucket }}
+      patches:
+        - target: {kind: Deployment, name: spillway-operator}
+          patch: |-
+            - op: replace
+              path: /spec/template/spec/containers/0/args
+              value:
+                - --cold-bucket={{ .bucket }}
+                - --cold-region={{ .region }}
+                {{- if .endpoint }}
+                - --cold-endpoint={{ .endpoint }}
+                {{- end }}
+      {{- end }}
+      {{- end }}
+{{- range $feeder := list "wikimedia-feeder" "github-feeder" }}
+---
+{{ include "spillway.meta" (dict "name" $feeder "wave" 3) }}
+spec:
+  {{- include "spillway.sync" (dict "namespace" "feeders") | nindent 2 }}
+  source:
+    {{- include "spillway.repo" $ | nindent 4 }}
+    path: deploy/cloud/k8s/{{ $feeder }}
+    kustomize:
+      images:
+        - {{ include "spillway.image" (dict "name" $feeder "root" $) }}
+{{- end }}

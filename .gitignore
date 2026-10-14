@@ -2,3 +2,9 @@
 /bin/
 # Kubeconfig for the local kind cluster
 /.kubeconfig
+# Kubeconfig for the EKS environment (make cloud-up)
+/.kubeconfig-cloud
+# Terraform's providers, modules and state (the environment is short-lived)
+/deploy/cloud/terraform/.terraform/
+/deploy/cloud/terraform/terraform.tfstate*
+/deploy/cloud/terraform/*.tfplan
