@@ -100,7 +100,7 @@ Spillway is a Kubernetes log platform: one `LogPipeline` spec per team becomes a
 
 ## Open threads
 
-- **The cloud environment hasn't been stood up yet** (M4.3): `make cloud-plan` needs AWS credentials, and `cloud-up` needs the owner's go-ahead on cost. Before then: the images must be published and their GHCR packages made public (`cloud-up` checks). The benchmark and chaos scripts load images into kind and freeze processes through `docker exec` on kind's nodes, so they need changes to run on EKS.
+- **The cloud environment hasn't been stood up yet** (M4.3): `make cloud-plan` needs AWS credentials, and `cloud-up` needs the owner's go-ahead on cost. Before then: the images of `main` must be published (`cloud-up` checks they're pullable anonymously; the packages are public). The benchmark and chaos scripts load images into kind and freeze processes through `docker exec` on kind's nodes, so they need changes to run on EKS.
 
 - **A full disk loses acknowledged events:** Vector crashes on ENOSPC (exiting 0, so Kubernetes shows `Completed`), then truncates each disk buffer's torn tail, events whose Kafka offsets were committed: 47 lost across the sinks in the M4.2 run. Spillway's defence is a volume only Vector writes, sized for its buffers (Vector checks capacity at startup). A fix belongs upstream (an M4.5 candidate).
 - **Cold storage is at-least-once:** an aggregator crash leaves duplicates in S3 (483 in the M4.2 kill); Loki drops byte-identical replays. Readers of cold storage dedupe by `spillway.event_id`.
