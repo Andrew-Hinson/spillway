@@ -54,7 +54,7 @@ Good:
 - **Teardown is a single command that checks itself.**
 
 Bad:
-- **GHCR makes a new package private,** even from a public repo. Someone has to make each package public once, in GitHub's settings, before EKS can pull it.
+- **EKS pulls from a third party:** the cluster can't start without GHCR. (This ADR first said GHCR would make new packages private; published from this public repo, all five were public, and pullable anonymously, on the first push.)
 - **The image must exist before Argo CD can roll it out.** A merge that changes the operator or a feeder points `main` at a new tag a few minutes before the workflow publishes it, and the pods wait in `ImagePullBackOff` until then.
 - **Every change to the operator or feeder source changes `generated.yaml`,** and `make generate` has to be rerun, as with the CRD.
 - **One zone and public subnets** aren't a production layout. They're right for a measurement environment that lives for hours.
@@ -62,7 +62,7 @@ Bad:
 
 Alternatives considered:
 - **IRSA:** works, but needs an OIDC provider and a role annotation on the service account. Pod Identity binds the role to the service account from Terraform, with nothing in the chart values.
-- **ECR:** private by default with no extra step, but pushing needs AWS credentials in CI (an OIDC role, created only once the environment exists). That couples publishing to the environment's lifetime.
+- **ECR:** in the same account as the cluster, but pushing needs AWS credentials in CI (an OIDC role, created only once the environment exists). That couples publishing to the environment's lifetime.
 - **Argo CD Image Updater, or CI committing tags:** `main` is protected and takes changes only through PRs, so CI can't commit. Generating tags with the other generated files fits the repo's existing check.
 - **Installing Argo CD from Terraform (the Helm provider):** this ties the cluster's creation to its contents in one apply, and makes destroy order fragile. A script after the apply keeps Terraform to infrastructure.
 - **Private subnets with a NAT gateway:** the usual layout, but about $33 a month plus $0.045 per gigabyte for what the feeders and image pulls download, with nothing gained for a short-lived environment.
