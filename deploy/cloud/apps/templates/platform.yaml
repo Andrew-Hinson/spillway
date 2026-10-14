@@ -1,0 +1,89 @@
+{{- /*
+Wave 0: what the platform stands on. Wave 1: Kafka, Loki, Prometheus and
+Grafana, from the same charts and values files `make up` uses.
+*/ -}}
+{{- if eq .Values.profile "aws" }}
+{{ include "spillway.meta" (dict "name" "cluster" "wave" 0) }}
+spec:
+  {{- include "spillway.sync" (dict "namespace" "kube-system") | nindent 2 }}
+  source:
+    {{- include "spillway.repo" . | nindent 4 }}
+    path: deploy/cloud/k8s/aws
+{{- else }}
+{{ include "spillway.meta" (dict "name" "storage" "wave" 0) }}
+spec:
+  {{- include "spillway.sync" (dict "namespace" "storage") | nindent 2 }}
+  source:
+    {{- include "spillway.repo" . | nindent 4 }}
+    path: deploy/platform/storage
+{{- end }}
+---
+{{ include "spillway.meta" (dict "name" "strimzi" "wave" 0) }}
+spec:
+  {{- include "spillway.sync" (dict "namespace" "kafka") | nindent 2 }}
+  sources:
+    - repoURL: quay.io/strimzi-helm
+      chart: strimzi-kafka-operator
+      targetRevision: {{ .Values.charts.strimzi }}
+      helm:
+        releaseName: strimzi
+        valueFiles: [$values/deploy/platform/strimzi/values.yaml]
+    - {{- include "spillway.repo" . | nindent 6 }}
+      ref: values
+  # The chart's kafkas CRD has an empty `properties: {}` that the API server
+  # drops, so it would never match.
+  ignoreDifferences:
+    - group: apiextensions.k8s.io
+      kind: CustomResourceDefinition
+      name: kafkas.kafka.strimzi.io
+      jqPathExpressions:
+        - .spec.versions[].schema.openAPIV3Schema.properties.status.properties.clusterSecurity.properties
+---
+{{ include "spillway.meta" (dict "name" "kafka" "wave" 1) }}
+spec:
+  {{- include "spillway.sync" (dict "namespace" "kafka") | nindent 2 }}
+  source:
+    {{- include "spillway.repo" . | nindent 4 }}
+    path: deploy/cloud/k8s/kafka
+---
+{{ include "spillway.meta" (dict "name" "loki" "wave" 1) }}
+spec:
+  {{- include "spillway.sync" (dict "namespace" "observability") | nindent 2 }}
+  sources:
+    - repoURL: https://grafana-community.github.io/helm-charts
+      chart: loki
+      targetRevision: {{ .Values.charts.loki }}
+      helm:
+        releaseName: loki
+        valueFiles: [$values/deploy/platform/loki/values.yaml]
+    - {{- include "spillway.repo" . | nindent 6 }}
+      ref: values
+---
+{{ include "spillway.meta" (dict "name" "prometheus" "wave" 1) }}
+spec:
+  {{- include "spillway.sync" (dict "namespace" "observability") | nindent 2 }}
+  sources:
+    - repoURL: https://prometheus-community.github.io/helm-charts
+      chart: prometheus
+      targetRevision: {{ .Values.charts.prometheus }}
+      helm:
+        releaseName: prometheus
+        valueFiles: [$values/deploy/platform/prometheus/values.yaml]
+    - {{- include "spillway.repo" . | nindent 6 }}
+      ref: values
+---
+{{ include "spillway.meta" (dict "name" "grafana" "wave" 1) }}
+spec:
+  {{- include "spillway.sync" (dict "namespace" "observability") | nindent 2 }}
+  sources:
+    - repoURL: https://grafana-community.github.io/helm-charts
+      chart: grafana
+      targetRevision: {{ .Values.charts.grafana }}
+      helm:
+        releaseName: grafana
+        valueFiles: [$values/deploy/platform/grafana/values.yaml]
+    - {{- include "spillway.repo" . | nindent 6 }}
+      ref: values
+    # The dashboards ConfigMap, from dashboards/.
+    - {{- include "spillway.repo" . | nindent 6 }}
+      path: deploy/cloud/k8s/grafana

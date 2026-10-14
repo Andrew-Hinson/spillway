@@ -73,6 +73,7 @@ More in [`examples/`](examples). `bin/spillwayctl validate --vector-bin bin/vect
 |---|---|
 | `make test`, `make lint`, `make vector-check` | Go tests (with a real API server and Vector), lint, and Vector's validation and generated unit tests. CI runs these, plus `make generate` |
 | `make bench`, `make chaos` | The throughput benchmark and the chaos experiments, against a fresh `make up` |
+| `make cloud-plan`, `make cloud-up`, `make cloud-down` | The same stack on EKS, deployed by Argo CD ([ADR 0007](docs/adr/0007-cloud-environment-eks-and-argo-cd.md)) |
 | `make help` | Every target |
 
 The [build plan](docs/plan.md) tracks progress, [`docs/adr`](docs/adr) records the design decisions, and [`CLAUDE.md`](CLAUDE.md) is the detailed guide to how the system fits together.

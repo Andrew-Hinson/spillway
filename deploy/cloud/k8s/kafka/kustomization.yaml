@@ -1,0 +1,5 @@
+# The Kafka cluster and the agents' topic (the feeder topics come with the
+# feeders).
+resources:
+  - ../../../platform/kafka/kafka.yaml
+  - ../../../../vector/agent/topic.yaml

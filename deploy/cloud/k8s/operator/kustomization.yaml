@@ -1,0 +1,9 @@
+# The operator and its CRD and RBAC, as `make operator` applies them. The
+# Application sets the image (and, in the cloud, the cold bucket).
+resources:
+  - ../../../operator/crd/spillway.dev_logpipelines.yaml
+  - ../../../operator/rbac/role.yaml
+  - ../../../operator/operator.yaml
+patches:
+  - path: ../pull-policy.yaml
+    target: {kind: Deployment}

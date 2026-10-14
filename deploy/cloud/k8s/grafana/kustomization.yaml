@@ -1,0 +1,9 @@
+# The dashboards in dashboards/, as `make grafana` makes them.
+namespace: observability
+generatorOptions:
+  disableNameSuffixHash: true
+configMapGenerator:
+  - name: grafana-dashboards
+    files:
+      - ../../../../dashboards/cost.json
+      - ../../../../dashboards/pipeline.json

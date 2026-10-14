@@ -1,0 +1,16 @@
+# The wikimedia feeder and its topic, as `make wikimedia-feeder` applies them. The
+# Application sets the image.
+resources:
+  - ../../../feeders/wikimedia.yaml
+patches:
+  - path: ../pull-policy.yaml
+    target: {kind: Deployment}
+  # Both feeders' files declare the namespace; Argo CD creates it instead
+  # (CreateNamespace), so neither Application owns it and pruning one can't
+  # delete the other.
+  - patch: |-
+      $patch: delete
+      apiVersion: v1
+      kind: Namespace
+      metadata:
+        name: feeders

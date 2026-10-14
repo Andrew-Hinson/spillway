@@ -1,0 +1,38 @@
+name: Images
+
+# Publishes the images built from this repo to GHCR, for the cloud
+# environment (deploy/cloud). Each is tagged with a hash of its source (the
+# Makefile's *_TAG), the tag deploy/cloud/apps/generated.yaml names, so an
+# image is built only when its source changed.
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: images
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    name: Publish images
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Log in to GHCR
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+      - name: Build and push the images that aren't published yet
+        run: |
+          make -s image-list | while IFS=: read -r name file tag arg; do
+            ref=ghcr.io/andrew-hinson/spillway/$name:$tag
+            if docker manifest inspect "$ref" >/dev/null 2>&1; then
+              echo "$ref is already published"
+              continue
+            fi
+            docker build -t "$ref" ${arg:+--build-arg "$arg"} -f "$file" .
+            docker push "$ref"
+          done

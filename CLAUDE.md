@@ -5,7 +5,7 @@ Spillway is a Kubernetes log platform: one `LogPipeline` spec per team becomes a
 ## Where the state lives
 
 - **Progress:** [`docs/plan.md`](docs/plan.md) has the milestones, the gate for each, and a checkbox per work item. Each item is a GitHub issue titled `[Mx.y] …` with its acceptance criteria. `gh issue list` shows what's open.
-- **Decisions:** [`docs/adr/`](docs/adr). 0001: validation with Vector bundled in the operator image. 0002: canary rollout via StatefulSet partition, quarantine and last-good specs. 0003: redaction on by default, with boundary-free patterns. 0004: pod logs parsed, with only the feeder stamp trusted from an app's `spillway`. 0005: budgets split evenly across the aggregators, over a 10 s window, with pod logs through Kafka so they spread evenly. 0006: Silo (a maintained MinIO fork) for local cold storage, since MinIO no longer publishes images.
+- **Decisions:** [`docs/adr/`](docs/adr). 0001: validation with Vector bundled in the operator image. 0002: canary rollout via StatefulSet partition, quarantine and last-good specs. 0003: redaction on by default, with boundary-free patterns. 0004: pod logs parsed, with only the feeder stamp trusted from an app's `spillway`. 0005: budgets split evenly across the aggregators, over a 10 s window, with pod logs through Kafka so they spread evenly. 0006: Silo (a maintained MinIO fork) for local cold storage, since MinIO no longer publishes images. 0007: the cloud environment, EKS from Terraform and the stack from Argo CD.
 - **Measurements:** [`docs/results/`](docs/results): the M1 baseline, the M2 and M3 gate runs, M3.2's redaction false positives and leak check, M3.3's sampling, dedupe and per-team drops, M3.4's budgets, M3.5's cold path, M3.6's cost attribution, M3.7's GitHub feeder, M4.1's stepped-load benchmark, and M4.2's chaos experiments.
 - **Why something is the way it is:** the PR descriptions (`gh pr view N`) record the design, what testing found, and known limitations.
 
@@ -13,7 +13,7 @@ Spillway is a Kubernetes log platform: one `LogPipeline` spec per team becomes a
 
 1. **Branch** from an up-to-date `main`: `git checkout main && git pull --ff-only && git checkout -b mX.Y-short-name`.
 2. **Read the issue** (`gh issue view N`) and the plan's gate for the milestone, then build to the acceptance criteria.
-3. **Check locally:** `make lint`, `make test`, `make generate` (must leave no diff; CI checks), and `make vector-check`.
+3. **Check locally:** `make lint`, `make test`, `make generate` (must leave no diff; CI checks), and `make vector-check`. `make generate` also writes the image tags in `deploy/cloud/apps/generated.yaml`, so any change to the operator's or a feeder's source needs it.
 4. **Test end to end in kind** for anything that touches the running system: `make up` from scratch, then apply real specs and query Loki and Prometheus. Unit tests alone have repeatedly missed real bugs here: VRL type errors, Vector's retry behaviour, the SSN matcher.
 5. **Update docs:** tick the plan's checkbox, update the README's results table if a headline number changed (keep the README short: details belong in `docs/results`, the ADRs and this file), and add or update an ADR for a significant design decision.
 6. **PR:** the title ends in `(Mx.y)`, and the body starts with `Closes #N`. Then a criteria → "how it's met" table, the design, notes and limitations, and a test plan with honest results (say what failed and what was fixed). CI must pass before merging.
@@ -43,6 +43,9 @@ Spillway is a Kubernetes log platform: one `LogPipeline` spec per team becomes a
 | `make redaction-fp DURATION=600` | Capture live Wikimedia events and count what each redaction pattern masks |
 | `make bench STEPS=… STEP=4m` | Stepped-load benchmark (M4.1): `feeders/loadgen` into `bench.load`, through the `bench` team (`deploy/bench`), reported by `bench/throughput.py`. Against a fresh `make up`; don't run CPU-heavy work alongside it |
 | `make chaos SCENARIOS=…` | Chaos experiments (M4.2): aggregator kill, Loki and Silo frozen, disk full, pod-log control, agent kill. Every event of each run counted in Loki and S3 by event ID (`bench/eventcheck.py`). Against a fresh `make up`, about 90 min |
+| `make cloud-plan` | What the EKS environment would create (`deploy/cloud/terraform`). Creates nothing, but needs AWS credentials (the default profile) |
+| `make cloud-up` / `make cloud-down` | Create the EKS environment and deploy the stack with Argo CD from `main` / delete it all and check nothing tagged `spillway` is left. **Billed by the hour: only with the owner's go-ahead** |
+| `make cluster kind-images argocd REVISION=<branch>` | The cloud's Argo CD setup on kind (profile `kind`), from a pushed branch: how to test `deploy/cloud/apps` without AWS |
 | `make tools` | Pinned kind, kubectl, helm, golangci-lint, controller-gen, setup-envtest and vector, in `./bin` |
 
 ## How the system fits together
@@ -63,6 +66,8 @@ Spillway is a Kubernetes log platform: one `LogPipeline` spec per team becomes a
 - **Redaction** (`internal/redact`): VRL `redact()` filters, on by default (a spec opts out with `redaction: {disabled: true}`). The patterns have no `\b`: escaped JSON in pod logs (`\n123-45-6789`) defeats word boundaries, and VRL's regex has no lookbehind. `testdata/corpus.yaml` holds the positive and negative cases. Run a candidate pattern against live data with `go run ./bench/redactfp -filter name=r'…'` before changing one.
 - **Canary stall check:** a sink is stalled only if it had received events by a checkpoint, the longest batch timeout plus 15 s before the end of the bake, and delivered none by the end. Bursty, low-rate sources (GitHub) can deliver their first events late in a bake (ADR 0002 amendment).
 - **Canary timing:** each config change takes ~2.5–4 min to reach both aggregators (2 min bake plus two restarts). Bake ≥ 2× the longest sink batch timeout. Error allowance is max(5, 0.1% of events).
+
+- **Cloud** (`deploy/cloud`, ADR 0007): Terraform makes the EKS cluster, the cold bucket and the Pod Identity role the aggregators write to it with. Argo CD deploys everything else from `deploy/cloud/apps`, an app of apps that wraps the same charts, values and manifests `make up` uses. The differences are a `profile` value (`aws` or `kind`). Images come from GHCR (`.github/workflows/images.yml` publishes them on every push to `main`), tagged with the source hashes in `generated.yaml`. Argo CD uses server-side apply and server-side diff, so it owns only the fields its manifests set and leaves the operator's alone. Verified in kind: a canary rollout under Argo CD caused no OutOfSync and no self-heal sync.
 
 ## Testing expectations
 
@@ -89,11 +94,13 @@ Spillway is a Kubernetes log platform: one `LogPipeline` spec per team becomes a
 - **Disk-full tests:** Vector refuses to start when its disk buffers' total `max_size` exceeds the mountpoint's capacity (3 GiB on an aggregator), so a small tmpfs can't stand in for a full disk; a big tmpfs with a filler file can.
 - **Faults without touching Helm-owned fields:** `docker exec <node> pkill -STOP -x loki` (or `silo`) freezes a process from its kind node; `-CONT` resumes it.
 - **Loki sizing:** stock limits (3 MB/s per stream) capped one team's hot path near 2,700 events/s, since `hot_loki` makes one stream per team and source; `deploy/platform/loki/values.yaml` raises them to 64 MB/s (≈40,000 events/s, where the benchmark saw 429s). With 1 GiB Loki was OOM-killed at 24,000 events/s and crash-looped replaying its WAL; it has 4 GiB and a 2 GB `replay_memory_ceiling`.
-- **`pkill -f` matches its own shell:** a pattern like `pkill -f "kubectl.*port-forward"` is in the Bash tool's own command line, so it kills that shell (exit 144). Use `pkill -f "[k]ubectl.*port-forward"`.
+- **`pkill -f` matches its own shell:** a pattern like `pkill -f "kubectl.*port-forward"` is in the Bash tool's own command line, so it kills that shell (exit 144). Use `pkill -f "[k]ubectl.*port-forward"`, and in a command of its own: if the same command line also starts a `kubectl port-forward`, the pattern matches that text and kills the shell anyway.
 - **Kafka source counts:** a new team's Kafka source has its own consumer group, so its events flow from the canary pod before promotion.
 - **Generated files:** a new example in `examples/` changes the goldens and the pinned counts in `cmd/spillwayctl/main_test.go`.
 
 ## Open threads
+
+- **The cloud environment hasn't been stood up yet** (M4.3): `make cloud-plan` needs AWS credentials, and `cloud-up` needs the owner's go-ahead on cost. Before then: the images must be published and their GHCR packages made public (`cloud-up` checks). The benchmark and chaos scripts load images into kind and freeze processes through `docker exec` on kind's nodes, so they need changes to run on EKS.
 
 - **A full disk loses acknowledged events:** Vector crashes on ENOSPC (exiting 0, so Kubernetes shows `Completed`), then truncates each disk buffer's torn tail, events whose Kafka offsets were committed: 47 lost across the sinks in the M4.2 run. Spillway's defence is a volume only Vector writes, sized for its buffers (Vector checks capacity at startup). A fix belongs upstream (an M4.5 candidate).
 - **Cold storage is at-least-once:** an aggregator crash leaves duplicates in S3 (483 in the M4.2 kill); Loki drops byte-identical replays. Readers of cold storage dedupe by `spillway.event_id`.

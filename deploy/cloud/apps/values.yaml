@@ -1,0 +1,24 @@
+# Values for the app of apps. The chart versions, image tags and the agent's
+# config checksum are in generated.yaml (written by `make generate`); the
+# cluster-specific ones below are set by `make argocd` on the root
+# Application.
+
+# Where Argo CD reads the manifests and values from.
+repoURL: https://github.com/Andrew-Hinson/spillway.git
+revision: main
+
+# aws: EKS, a gp3 StorageClass, S3 through Pod Identity, images from GHCR.
+# kind: Silo for cold storage (its Secret made by `make argocd`), images
+# loaded into kind by `make kind-images`.
+profile: aws
+
+images:
+  # spillway/<name>:<tag> in kind; ghcr.io/andrew-hinson/spillway/<name>:<tag>
+  # in the cloud (.github/workflows/images.yml publishes them).
+  registry: ghcr.io/andrew-hinson/spillway
+
+cold:
+  bucket: ""
+  region: us-east-1
+  # Empty for AWS S3.
+  endpoint: ""

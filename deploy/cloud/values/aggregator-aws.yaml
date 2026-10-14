@@ -1,0 +1,9 @@
+# On EKS, on top of vector/aggregator/values.yaml: no cold-storage Secret. The
+# aws_s3 sink gets credentials from EKS Pod Identity, which Terraform binds to
+# this release's service account (vector/vector-aggregator,
+# deploy/cloud/terraform/storage.tf). The list replaces the base file's env.
+env:
+  - name: SPILLWAY_CONFIG_SUFFIX
+    valueFrom:
+      fieldRef:
+        fieldPath: metadata.annotations['spillway.dev/config-suffix']

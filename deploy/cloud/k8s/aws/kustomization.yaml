@@ -1,0 +1,4 @@
+# EKS only: the default StorageClass. EKS no longer marks its gp2 class as
+# default, and every chart here asks for the default.
+resources:
+  - storageclass.yaml
